@@ -15,7 +15,7 @@ class AppConfig:
     min_velocity: int = 32
     sample_rate: int = 22050
     width: int = 900
-    height: int = 160
+    height: int = 190
     demo_mode: bool = False
     demo_midi: str | None = None
     model: str = "piano-gpu"
@@ -33,7 +33,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     parser.add_argument("--min-velocity", type=int, default=32)
     parser.add_argument("--sample-rate", type=int, default=22050)
     parser.add_argument("--width", type=int, default=900)
-    parser.add_argument("--height", type=int, default=160)
+    parser.add_argument("--height", type=int, default=190)
     parser.add_argument("--demo-mode", action="store_true", help="随机和弦演示")
     parser.add_argument(
         "--demo-midi",

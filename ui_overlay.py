@@ -81,6 +81,7 @@ class OverlayWindow(QWidget):
         self._native_move = False
         self._always_on_top = True
         self._position_locked = False
+        self._keyboard_only = False
         self._click_through = False
         self._show_status = True
         self._opacity = 0.85
@@ -217,9 +218,10 @@ class OverlayWindow(QWidget):
         # frameless windows. Paint-level opacity is platform-independent.
         painter.setOpacity(self._opacity)
         now = time.monotonic()
-        self._draw_glass(painter)
-        self._draw_status(painter)
-        self._draw_settings(painter)
+        if not self._keyboard_only:
+            self._draw_glass(painter)
+            self._draw_status(painter)
+            self._draw_settings(painter)
         self._draw_pitch_legend(painter)
         self._draw_controls(painter)
         white, black = self._keyboard_geometry()
@@ -285,6 +287,7 @@ class OverlayWindow(QWidget):
             return
 
         p.save()
+        p.setOpacity(max(0.50, self._opacity))
         font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.050)))
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
@@ -300,7 +303,11 @@ class OverlayWindow(QWidget):
     def _control_rects(self) -> dict[str, QRectF]:
         size = max(21.0, min(27.0, self.height() * 0.17))
         gap = 5.0
-        names = ("model", "lock", "top", "smaller", "larger", "opacity")
+        names = (
+            ("lock",)
+            if self._keyboard_only
+            else ("minimal", "model", "lock", "top", "smaller", "larger", "opacity")
+        )
         start = self.width() - 20.0 - len(names) * size - (len(names) - 1) * gap
         return {
             name: QRectF(start + index * (size + gap), 16.0, size, size)
@@ -310,6 +317,9 @@ class OverlayWindow(QWidget):
     def _draw_controls(self, p: QPainter) -> None:
         p.save()
         for name, rect in self._control_rects().items():
+            p.save()
+            if name == "lock":
+                p.setOpacity(max(0.50, self._opacity))
             active = (
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
@@ -319,6 +329,7 @@ class OverlayWindow(QWidget):
             p.setBrush(QColor(61, 139, 186, 90) if active else QColor(19, 29, 45, 155))
             p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
             self._draw_control_icon(p, name, rect)
+            p.restore()
         p.restore()
 
     def _draw_control_icon(self, p: QPainter, name: str, rect: QRectF) -> None:
@@ -327,7 +338,19 @@ class OverlayWindow(QWidget):
         p.setPen(QPen(QColor(205, 233, 249, 225), max(1.2, unit * 0.48)))
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        if name == "model":
+        if name == "minimal":
+            # Four focus corners: remove all chrome and keep only the keyboard.
+            corner = unit * 2.0
+            short = unit * 1.15
+            for x, y, dx, dy in (
+                (cx - corner, cy - corner, 1, 1),
+                (cx + corner, cy - corner, -1, 1),
+                (cx - corner, cy + corner, 1, -1),
+                (cx + corner, cy + corner, -1, -1),
+            ):
+                p.drawLine(QLineF(x, y, x + dx * short, y))
+                p.drawLine(QLineF(x, y, x, y + dy * short))
+        elif name == "model":
             chip = QRectF(cx - 2.15 * unit, cy - 1.75 * unit, 4.3 * unit, 3.5 * unit)
             p.drawRoundedRect(chip, unit * 0.45, unit * 0.45)
             for offset in (-1.25, 0, 1.25):
@@ -431,15 +454,19 @@ class OverlayWindow(QWidget):
                     keyboard_top - 3,
                 )
             )
+            text_alpha = round(185 + 70 * alpha)
+            p.save()
+            p.setOpacity(max(0.50, self._opacity))
             p.setFont(font)
-            p.setPen(self._note_color(note.midi, round(245 * alpha)))
+            p.setPen(self._note_color(note.midi, text_alpha))
             p.drawText(QPoint(round(center_x - note_width / 2), round(y)), note.name)
             p.setFont(solfege_font)
-            p.setPen(self._note_color(note.midi, round(185 * alpha)))
+            p.setPen(self._note_color(note.midi, text_alpha))
             p.drawText(
                 QPoint(round(center_x - solfege_width / 2), round(solfege_y)),
                 solfege,
             )
+            p.restore()
 
     def _draw_keyboard(self, p: QPainter, white, black, now: float) -> None:
         active: dict[int, float] = {}
@@ -454,16 +481,17 @@ class OverlayWindow(QWidget):
             base.setColorAt(1, QColor(154, 170, 190, 250))
             if glow:
                 color = self._note_color(midi)
-                # White keys use the former black-key treatment: saturated
-                # center, stronger contrast and a deeper colored tail.
-                light = color.lighter(125)
-                deep = color.darker(165)
+                # White keys need a brighter center to offset their larger
+                # illuminated area and the pale resting-key substrate.
+                light = color.lighter(175)
+                center_color = color.lighter(135)
+                deep = color.darker(105)
                 alpha = round(185 + 70 * glow)
                 light.setAlpha(alpha)
-                color.setAlpha(alpha)
+                center_color.setAlpha(alpha)
                 deep.setAlpha(round(alpha * 0.97))
                 base.setColorAt(0, light)
-                base.setColorAt(0.42, color)
+                base.setColorAt(0.42, center_color)
                 base.setColorAt(1, deep)
             edge = self._note_color(midi, round(58 + 90 * glow))
             p.setPen(QPen(edge, 0.8))
@@ -475,31 +503,6 @@ class OverlayWindow(QWidget):
                 p.restore()
             else:
                 p.drawRoundedRect(rect, 1.8, 1.8)
-        # Glows are batched only for active keys.
-        p.save()
-        p.setOpacity(max(0.50, self._opacity))
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
-        for midi, strength in active.items():
-            rect = white.get(midi)
-            if rect is None:
-                rect = black.get(midi)
-            if rect is None:
-                continue
-            center = rect.center()
-            color = self._note_color(midi)
-            mid = color.lighter(112)
-            radius = max(18, rect.width() * 3.0)
-            glow = QRadialGradient(center, radius)
-            mid.setAlpha(round(145 * strength))
-            transparent = self._note_color(midi, 0)
-            color.setAlpha(round(235 * strength))
-            glow.setColorAt(0, color)
-            glow.setColorAt(0.38, mid)
-            glow.setColorAt(1, transparent)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(glow)
-            p.drawEllipse(center, radius, radius)
-        p.restore()
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
@@ -507,16 +510,17 @@ class OverlayWindow(QWidget):
             base.setColorAt(1, QColor(8, 14, 25, 250))
             if glow:
                 color = self._note_color(midi)
-                # Black keys use the former white-key treatment: a softer,
-                # brighter glass tint with less dark color compression.
-                light = color.lighter(150)
-                deep = color.darker(118)
+                # Keep black keys saturated, but reduce their center luminance
+                # so the dark substrate no longer makes them dominate.
+                light = color.lighter(110)
+                center_color = color.darker(130)
+                deep = color.darker(200)
                 alpha = round(160 + 70 * glow)
                 light.setAlpha(alpha)
-                color.setAlpha(alpha)
+                center_color.setAlpha(alpha)
                 deep.setAlpha(round(alpha * 0.86))
                 base.setColorAt(0, light)
-                base.setColorAt(0.48, color)
+                base.setColorAt(0.48, center_color)
                 base.setColorAt(1, deep)
             edge = self._note_color(midi, round(30 + 110 * glow))
             p.setPen(QPen(edge, 0.7))
@@ -528,7 +532,47 @@ class OverlayWindow(QWidget):
                 p.restore()
             else:
                 p.drawRoundedRect(rect, 2, 2)
+        # Draw center glows only after both key layers exist. Previously black
+        # keys covered part of every neighboring white-key glow.
+        self._draw_active_center_glows(p, white, black, active)
         self._draw_active_key_edges(p, white, black, active)
+
+    def _draw_active_center_glows(
+        self,
+        p: QPainter,
+        white: dict[int, QRectF],
+        black: dict[int, QRectF],
+        active: dict[int, float],
+    ) -> None:
+        p.save()
+        p.setOpacity(max(0.50, self._opacity))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        for midi, strength in active.items():
+            is_white = midi in white
+            rect = white.get(midi)
+            if rect is None:
+                rect = black.get(midi)
+            if rect is None:
+                continue
+            # A small perceptual compensation offsets the larger illuminated
+            # area of white keys without changing pitch colors.
+            effective = min(1.0, strength * (1.12 if is_white else 1.0))
+            center = rect.center()
+            color = self._note_color(midi)
+            color = color.lighter(118) if is_white else color.darker(118)
+            mid = color.lighter(115)
+            radius = max(18, rect.width() * (2.45 if is_white else 3.0))
+            glow = QRadialGradient(center, radius)
+            mid.setAlpha(round(150 * effective))
+            transparent = self._note_color(midi, 0)
+            color.setAlpha(round(240 * effective))
+            glow.setColorAt(0, color)
+            glow.setColorAt(0.38, mid)
+            glow.setColorAt(1, transparent)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(glow)
+            p.drawEllipse(center, radius, radius)
+        p.restore()
 
     def _draw_active_auras(
         self,
@@ -630,7 +674,9 @@ class OverlayWindow(QWidget):
         event.accept()
 
     def _activate_control(self, name: str) -> None:
-        if name == "model":
+        if name == "minimal":
+            self._toggle_keyboard_only(True)
+        elif name == "model":
             next_model = (
                 "basic-pitch"
                 if self.config.model == "piano-gpu"
@@ -638,7 +684,10 @@ class OverlayWindow(QWidget):
             )
             self._select_model(next_model)
         elif name == "lock":
-            self._toggle_position_lock(not self._position_locked)
+            if self._keyboard_only:
+                self._toggle_keyboard_only(False)
+            else:
+                self._toggle_position_lock(not self._position_locked)
         elif name == "top":
             # Windows can toggle native topmost without rebuilding the window.
             # Other compositors keep the idempotent behavior to avoid jumps.
@@ -670,11 +719,14 @@ class OverlayWindow(QWidget):
         through.triggered.connect(self._toggle_click_through)
         status = QAction("显示参数面板", self, checkable=True, checked=self._show_status)
         status.triggered.connect(lambda checked: self._set_show_status(checked))
+        minimal = QAction("纯键盘模式", self, checkable=True, checked=self._keyboard_only)
+        minimal.triggered.connect(self._toggle_keyboard_only)
         quit_action = QAction("退出", self)
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(top)
         menu.addAction(locked)
         menu.addAction(through)
+        menu.addAction(minimal)
         menu.addSeparator()
         model_menu = menu.addMenu("识别模型")
         model_group = QActionGroup(model_menu)
@@ -866,4 +918,10 @@ class OverlayWindow(QWidget):
 
     def _set_show_status(self, enabled: bool) -> None:
         self._show_status = enabled
+        self.update()
+
+    def _toggle_keyboard_only(self, enabled: bool) -> None:
+        self._keyboard_only = enabled
+        # Entering is always locked; leaving restores normal draggable mode.
+        self._toggle_position_lock(enabled)
         self.update()
