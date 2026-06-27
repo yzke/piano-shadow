@@ -18,7 +18,7 @@ class AppConfig:
     height: int = 160
     demo_mode: bool = False
     demo_midi: str | None = None
-    model: str = "basic-pitch"
+    model: str = "piano-gpu"
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
@@ -43,7 +43,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     parser.add_argument(
         "--model",
         choices=("basic-pitch", "piano-gpu"),
-        default="basic-pitch",
+        default="piano-gpu",
         help="音频识别模型",
     )
     ns = parser.parse_args(argv)

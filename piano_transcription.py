@@ -24,11 +24,13 @@ class PianoGpuTranscriptionWorker:
         input_queue: queue.Queue[np.ndarray],
         on_notes: Callable[[list[NoteEvent]], None],
         on_status: Callable[[str, bool], None],
+        on_fallback: Callable[[str], None],
     ) -> None:
         self.config = config
         self.input = input_queue
         self.on_notes = on_notes
         self.on_status = on_status
+        self.on_fallback = on_fallback
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -50,16 +52,18 @@ class PianoGpuTranscriptionWorker:
         except Exception as exc:
             self.on_status(f"Piano GPU 不可用 · 请安装 GPU 模型依赖（{exc}）", True)
             logging.disable(previous_logging_level)
+            self.on_fallback("basic-pitch")
             return
         finally:
             logging.disable(previous_logging_level)
 
         if not torch.cuda.is_available():
-            self.on_status("Piano GPU 不可用 · PyTorch 未检测到 CUDA", True)
+            self.on_status("Piano GPU 不可用 · 自动回退 Basic Pitch", True)
+            self.on_fallback("basic-pitch")
             return
         try:
             gpu_name = torch.cuda.get_device_name(0)
-            self.on_status(f"Loading · Piano GPU · {gpu_name}", False)
+            self.on_status("Loading · Piano GPU", False)
             # The package defaults to 10-second segments and pads shorter
             # inputs with silence. Two seconds is the measured accuracy/latency
             # balance for this desktop association aid.
@@ -74,6 +78,7 @@ class PianoGpuTranscriptionWorker:
             torch.backends.cudnn.allow_tf32 = True
         except Exception as exc:
             self.on_status(f"Piano GPU 模型加载失败（{exc}）", True)
+            self.on_fallback("basic-pitch")
             return
 
         context_seconds = 2.0
@@ -84,7 +89,7 @@ class PianoGpuTranscriptionWorker:
         first_window = True
         stream_frames = 0
         last_onsets: dict[int, float] = {}
-        self.on_status(f"Listening · Piano GPU · {gpu_name}", False)
+        self.on_status("Listening · Piano GPU", False)
 
         while not self._stop.is_set():
             try:

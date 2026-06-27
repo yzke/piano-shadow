@@ -51,6 +51,17 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(selected, ["piano-gpu", "basic-pitch"])
         window.close()
 
+    def test_gpu_fallback_updates_ui_selection(self):
+        config = AppConfig(demo_mode=True, model="piano-gpu")
+        window = OverlayWindow(config)
+        selected = []
+        window.model_selected.connect(selected.append)
+        window.model_fallback_received.emit("basic-pitch")
+        self.app.processEvents()
+        self.assertEqual(config.model, "basic-pitch")
+        self.assertEqual(selected, ["basic-pitch"])
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

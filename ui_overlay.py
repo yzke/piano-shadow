@@ -7,7 +7,7 @@ import platform
 import time
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
@@ -37,18 +37,18 @@ from note_model import NoteEvent, PIANO_HIGH, PIANO_LOW, is_black_key
 # Stable pitch-class colors across every octave: C4 and C7, for example,
 # always share the same color. Sharps receive their own intermediate hue.
 PITCH_COLORS = (
-    (74, 214, 255),   # C   cyan
-    (55, 226, 194),   # C#  turquoise
-    (93, 218, 132),   # D   green
-    (168, 218, 91),   # D#  lime
-    (246, 210, 82),   # E   gold
-    (255, 163, 75),   # F   orange
-    (255, 112, 105),  # F#  coral
-    (246, 101, 151),  # G   rose
-    (211, 105, 225),  # G#  magenta
-    (160, 116, 246),  # A   violet
-    (112, 139, 255),  # A#  indigo
-    (75, 181, 255),   # B   blue
+    (247, 105, 137),  # C   soft rose
+    (249, 132, 116),  # C#  coral glass
+    (246, 164, 101),  # D   apricot
+    (244, 191, 103),  # D#  warm amber
+    (237, 211, 112),  # E   champagne gold
+    (119, 215, 157),  # F   mint
+    (89, 210, 184),   # F#  aqua mint
+    (91, 198, 221),   # G   ice cyan
+    (103, 169, 232),  # G#  clear azure
+    (124, 143, 235),  # A   periwinkle
+    (165, 123, 226),  # A#  lavender
+    (207, 119, 211),  # B   orchid
 )
 SOLFEGE_NAMES = (
     "Do", "Do♯", "Re", "Re♯", "Mi", "Fa",
@@ -69,6 +69,7 @@ class OverlayWindow(QWidget):
     notes_received = pyqtSignal(object)
     status_received = pyqtSignal(str, bool)
     model_selected = pyqtSignal(str)
+    model_fallback_received = pyqtSignal(str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -87,6 +88,7 @@ class OverlayWindow(QWidget):
         self._setup_window()
         self.notes_received.connect(self.add_notes)
         self.status_received.connect(self.set_status)
+        self.model_fallback_received.connect(self._handle_model_fallback)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -218,6 +220,7 @@ class OverlayWindow(QWidget):
         self._draw_glass(painter)
         self._draw_status(painter)
         self._draw_settings(painter)
+        self._draw_pitch_legend(painter)
         self._draw_controls(painter)
         white, black = self._keyboard_geometry()
         self._draw_note_labels(painter, now, white, black)
@@ -230,8 +233,8 @@ class OverlayWindow(QWidget):
         gradient = QLinearGradient(0, 0, 0, self.height())
         # At 100% control opacity the glass is almost solid (~90% alpha).
         # The painter-level opacity scales this consistently on WSL/Wayland.
-        gradient.setColorAt(0, QColor(16, 22, 34, 235))
-        gradient.setColorAt(1, QColor(5, 9, 17, 220))
+        gradient.setColorAt(0, QColor(16, 22, 34, 220))
+        gradient.setColorAt(1, QColor(5, 9, 17, 205))
         p.fillPath(path, gradient)
         p.setPen(QPen(QColor(255, 255, 255, 25), 1))
         p.drawPath(path)
@@ -253,7 +256,7 @@ class OverlayWindow(QWidget):
         p.drawText(pill.adjusted(14, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter, text)
 
     def _draw_settings(self, p: QPainter) -> None:
-        if not self._show_status:
+        if not self._show_status or self.width() < 700:
             return
         text = (
             f"CHUNK {self.config.chunk_seconds:g}s   "
@@ -264,10 +267,35 @@ class OverlayWindow(QWidget):
         p.setFont(font)
         p.setPen(QColor(176, 197, 218, 125))
         p.drawText(
-            QRectF(self.width() * 0.48, 17, self.width() * 0.25, 24),
+            QRectF(self.width() * 0.30, 17, self.width() * 0.28, 24),
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             text,
         )
+
+    def _draw_pitch_legend(self, p: QPainter) -> None:
+        controls = self._control_rects()
+        control_left = min(rect.left() for rect in controls.values())
+        names = ("Do", "Re", "Mi", "Fa", "Sol", "La", "Si")
+        pitch_classes = (0, 2, 4, 5, 7, 9, 11)
+        gap = 3.0
+        item_width = max(14.0, min(20.0, self.width() * 0.021))
+        total_width = len(names) * item_width + (len(names) - 1) * gap
+        start_x = control_left - total_width - 12
+        if start_x < 8:
+            return
+
+        p.save()
+        font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.050)))
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        for index, (name, pitch_class) in enumerate(zip(names, pitch_classes)):
+            x = start_x + index * (item_width + gap)
+            red, green, blue = PITCH_COLORS[pitch_class]
+            color = QColor(red, green, blue, 220)
+            label_rect = QRectF(x - 1, 17, item_width + 2, 20)
+            p.setPen(color)
+            p.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, name)
+        p.restore()
 
     def _control_rects(self) -> dict[str, QRectF]:
         size = max(21.0, min(27.0, self.height() * 0.17))
@@ -417,28 +445,40 @@ class OverlayWindow(QWidget):
         active: dict[int, float] = {}
         for note in self.visual_notes:
             active[note.midi] = max(active.get(note.midi, 0), self._alpha(note, now) * note.strength)
+        self._draw_active_auras(p, white, black, active)
         for midi, rect in white.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
             # Resting keys sit roughly 10 percentage points above the glass.
             base.setColorAt(0, QColor(230, 237, 246, 255))
-            base.setColorAt(1, QColor(142, 157, 177, 245))
+            base.setColorAt(1, QColor(154, 170, 190, 250))
             if glow:
                 color = self._note_color(midi)
-                light = color.lighter(135)
-                deep = color.darker(135)
-                alpha = round(165 + 75 * glow)
+                # White keys use the former black-key treatment: saturated
+                # center, stronger contrast and a deeper colored tail.
+                light = color.lighter(125)
+                deep = color.darker(165)
+                alpha = round(185 + 70 * glow)
                 light.setAlpha(alpha)
                 color.setAlpha(alpha)
-                deep.setAlpha(round(alpha * 0.92))
+                deep.setAlpha(round(alpha * 0.97))
                 base.setColorAt(0, light)
-                base.setColorAt(0.48, color)
+                base.setColorAt(0.42, color)
                 base.setColorAt(1, deep)
             edge = self._note_color(midi, round(58 + 90 * glow))
             p.setPen(QPen(edge, 0.8))
             p.setBrush(base)
-            p.drawRoundedRect(rect, 1.8, 1.8)
+            if glow:
+                p.save()
+                p.setOpacity(max(0.50, self._opacity))
+                p.drawRoundedRect(rect, 1.8, 1.8)
+                p.restore()
+            else:
+                p.drawRoundedRect(rect, 1.8, 1.8)
         # Glows are batched only for active keys.
+        p.save()
+        p.setOpacity(max(0.50, self._opacity))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         for midi, strength in active.items():
             rect = white.get(midi)
             if rect is None:
@@ -448,36 +488,107 @@ class OverlayWindow(QWidget):
             center = rect.center()
             color = self._note_color(midi)
             mid = color.lighter(112)
-            glow = QRadialGradient(center, max(12, rect.width() * 2.3))
-            color.setAlpha(round(205 * strength))
-            mid.setAlpha(round(105 * strength))
+            radius = max(18, rect.width() * 3.0)
+            glow = QRadialGradient(center, radius)
+            mid.setAlpha(round(145 * strength))
             transparent = self._note_color(midi, 0)
+            color.setAlpha(round(235 * strength))
             glow.setColorAt(0, color)
-            glow.setColorAt(0.42, mid)
+            glow.setColorAt(0.38, mid)
             glow.setColorAt(1, transparent)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(glow)
-            p.drawEllipse(center, max(12, rect.width() * 2.3), max(12, rect.width() * 2.3))
+            p.drawEllipse(center, radius, radius)
+        p.restore()
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
             base.setColorAt(0, QColor(42, 52, 68, 255))
-            base.setColorAt(1, QColor(5, 10, 19, 245))
+            base.setColorAt(1, QColor(8, 14, 25, 250))
             if glow:
                 color = self._note_color(midi)
-                light = color.lighter(135)
-                deep = color.darker(145)
-                alpha = round(170 + 75 * glow)
+                # Black keys use the former white-key treatment: a softer,
+                # brighter glass tint with less dark color compression.
+                light = color.lighter(150)
+                deep = color.darker(118)
+                alpha = round(160 + 70 * glow)
                 light.setAlpha(alpha)
                 color.setAlpha(alpha)
-                deep.setAlpha(round(alpha * 0.95))
+                deep.setAlpha(round(alpha * 0.86))
                 base.setColorAt(0, light)
-                base.setColorAt(0.52, color)
+                base.setColorAt(0.48, color)
                 base.setColorAt(1, deep)
             edge = self._note_color(midi, round(30 + 110 * glow))
             p.setPen(QPen(edge, 0.7))
             p.setBrush(base)
-            p.drawRoundedRect(rect, 2, 2)
+            if glow:
+                p.save()
+                p.setOpacity(max(0.50, self._opacity))
+                p.drawRoundedRect(rect, 2, 2)
+                p.restore()
+            else:
+                p.drawRoundedRect(rect, 2, 2)
+        self._draw_active_key_edges(p, white, black, active)
+
+    def _draw_active_auras(
+        self,
+        p: QPainter,
+        white: dict[int, QRectF],
+        black: dict[int, QRectF],
+        active: dict[int, float],
+    ) -> None:
+        if not active:
+            return
+        keyboard_top = next(iter(white.values())).top()
+        p.save()
+        p.setOpacity(max(0.50, self._opacity))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        p.setPen(Qt.PenStyle.NoPen)
+        for midi, strength in active.items():
+            rect = white.get(midi)
+            if rect is None:
+                rect = black.get(midi)
+            if rect is None:
+                continue
+            center_x = rect.center().x()
+            beam_rect = QRectF(
+                center_x - max(6, rect.width() * 0.8),
+                keyboard_top - 31,
+                max(12, rect.width() * 1.6),
+                rect.height() + 31,
+            )
+            beam = QLinearGradient(0, beam_rect.top(), 0, beam_rect.bottom())
+            beam.setColorAt(0, self._note_color(midi, 0))
+            beam.setColorAt(0.42, self._note_color(midi, round(105 * strength)))
+            beam.setColorAt(0.72, self._note_color(midi, round(65 * strength)))
+            beam.setColorAt(1, self._note_color(midi, 0))
+            p.setBrush(beam)
+            p.drawRoundedRect(beam_rect, beam_rect.width() / 2, beam_rect.width() / 2)
+        p.restore()
+
+    def _draw_active_key_edges(
+        self,
+        p: QPainter,
+        white: dict[int, QRectF],
+        black: dict[int, QRectF],
+        active: dict[int, float],
+    ) -> None:
+        p.save()
+        p.setOpacity(max(0.50, self._opacity))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        for midi, strength in active.items():
+            rect = white.get(midi)
+            if rect is None:
+                rect = black.get(midi)
+            if rect is None:
+                continue
+            color = self._note_color(midi, round(225 * strength))
+            p.setPen(QPen(color, 1.25))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(rect.adjusted(0.7, 0.7, -0.7, -0.7), 2, 2)
+            p.setPen(QPen(self._note_color(midi, round(245 * strength)), 1.8))
+            p.drawLine(QLineF(rect.left() + 1.5, rect.top() + 1.2, rect.right() - 1.5, rect.top() + 1.2))
+        p.restore()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -543,9 +654,9 @@ class OverlayWindow(QWidget):
         elif name == "larger":
             self._set_scale(self._scale_percent + 10)
         elif name == "opacity":
-            levels = (40, 55, 70, 85, 100)
+            levels = (20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100)
             current = round(self._opacity * 100)
-            next_level = next((level for level in levels if level > current), 40)
+            next_level = next((level for level in levels if level > current), 20)
             self._opacity = next_level / 100
         self.update()
 
@@ -598,6 +709,11 @@ class OverlayWindow(QWidget):
         self.model_selected.emit(model_name)
         self.update()
 
+    @pyqtSlot(str)
+    def _handle_model_fallback(self, model_name: str) -> None:
+        if self.config.model != model_name:
+            self._select_model(model_name)
+
     def _opacity_action(self, menu: QMenu) -> QWidgetAction:
         action = QWidgetAction(menu)
         row = QWidget(menu)
@@ -607,7 +723,7 @@ class OverlayWindow(QWidget):
         value = QLabel(f"{round(self._opacity * 100)}%", row)
         value.setMinimumWidth(34)
         slider = QSlider(Qt.Orientation.Horizontal, row)
-        slider.setRange(25, 100)
+        slider.setRange(20, 100)
         slider.setValue(round(self._opacity * 100))
         slider.setMinimumWidth(145)
         slider.setToolTip("调节整个悬浮窗的可见度")

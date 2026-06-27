@@ -1,5 +1,6 @@
 import unittest
 
+from config import parse_args
 from note_model import (
     NoteEvent,
     filter_and_merge,
@@ -10,6 +11,9 @@ from note_model import (
 
 
 class NoteModelTests(unittest.TestCase):
+    def test_gpu_is_default_model(self):
+        self.assertEqual(parse_args([]).model, "piano-gpu")
+
     def test_piano_boundaries_and_middle_c(self):
         self.assertEqual(midi_to_name(21), "A0")
         self.assertEqual(midi_to_name(60), "C4")

@@ -103,12 +103,21 @@ def run(config: AppConfig) -> int:
                 if model_name == "piano-gpu"
                 else TranscriptionWorker
             )
-            worker = worker_class(
-                config,
-                audio_queue,
-                window.notes_received.emit,
-                window.status_received.emit,
-            )
+            if model_name == "piano-gpu":
+                worker = worker_class(
+                    config,
+                    audio_queue,
+                    window.notes_received.emit,
+                    window.status_received.emit,
+                    window.model_fallback_received.emit,
+                )
+            else:
+                worker = worker_class(
+                    config,
+                    audio_queue,
+                    window.notes_received.emit,
+                    window.status_received.emit,
+                )
             current_transcriber["worker"] = worker
             worker.start()
 
