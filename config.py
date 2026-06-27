@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 
 
@@ -22,6 +23,7 @@ class AppConfig:
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
+    default_model = "basic-pitch" if getattr(sys, "frozen", False) else "piano-gpu"
     parser = argparse.ArgumentParser(
         prog="Piano Shadow",
         description="桌面钢琴音符透明悬浮窗",
@@ -43,7 +45,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     parser.add_argument(
         "--model",
         choices=("basic-pitch", "piano-gpu"),
-        default="piano-gpu",
+        default=default_model,
         help="音频识别模型",
     )
     ns = parser.parse_args(argv)

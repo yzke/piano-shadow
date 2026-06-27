@@ -116,6 +116,10 @@ QT_QPA_PLATFORM=xcb python main.py --demo-mode
 有效，且应用与播放器运行在同一用户会话。某些蓝牙免提设备或独占模式播放器不提供
 loopback；切回普通扬声器、关闭独占模式后重试。
 
+GitHub Release 提供独立的 `PianoShadow-Windows-x64.exe`，无需安装 Python。由于完整
+CUDA PyTorch 运行时超过 GitHub 单文件大小限制，独立 EXE 使用 Basic Pitch ONNX
+CPU；需要 Piano GPU 时使用下方 PowerShell 安装方式运行源码版。
+
 推荐直接在 Windows PowerShell 中运行，这也能避开 WSLg 的置顶和双屏定位限制。
 在项目目录打开 PowerShell，首次执行：
 
@@ -135,6 +139,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 只安装界面依赖可使用 `.\setup-windows.ps1 -DemoOnly`；切换到真实识别时再执行一次
 不带 `-DemoOnly` 的安装命令。
+
+维护者可使用 `.\build-windows.ps1` 重建单文件 EXE，产物位于 `dist`。
 
 诊断 WASAPI loopback、录制 2.5 秒并自检 Basic Pitch：
 
