@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import math
+import os
 import platform
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
     QColor,
+    QDesktopServices,
     QFont,
     QFontMetricsF,
     QLinearGradient,
@@ -21,11 +24,14 @@ from PyQt6.QtGui import (
     QPen,
     QRadialGradient,
 )
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QMenu,
+    QProgressDialog,
     QSlider,
     QWidget,
     QWidgetAction,
@@ -70,6 +76,7 @@ class OverlayWindow(QWidget):
     status_received = pyqtSignal(str, bool)
     model_selected = pyqtSignal(str)
     model_fallback_received = pyqtSignal(str)
+    model_download_required = pyqtSignal(str, str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -83,6 +90,11 @@ class OverlayWindow(QWidget):
         self._position_locked = False
         self._keyboard_only = False
         self._click_through = False
+        self._model_download_prompt_shown = False
+        self._model_download_manager = QNetworkAccessManager(self)
+        self._model_download_reply: QNetworkReply | None = None
+        self._model_download_file = None
+        self._model_download_progress: QProgressDialog | None = None
         self._show_status = True
         self._opacity = 0.85
         self._scale_percent = 100
@@ -90,6 +102,7 @@ class OverlayWindow(QWidget):
         self.notes_received.connect(self.add_notes)
         self.status_received.connect(self.set_status)
         self.model_fallback_received.connect(self._handle_model_fallback)
+        self.model_download_required.connect(self._show_model_download_dialog)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -206,7 +219,7 @@ class OverlayWindow(QWidget):
                 black[midi] = QRectF(x, top, white_width * 0.62, height * 0.61)
             else:
                 white[midi] = QRectF(
-                    margin + white_index * white_width, top, white_width - 0.65, height
+                    margin + white_index * white_width, top, white_width + 0.05, height
                 )
                 white_index += 1
         return white, black
@@ -287,7 +300,7 @@ class OverlayWindow(QWidget):
             return
 
         p.save()
-        p.setOpacity(max(0.50, self._opacity))
+        p.setOpacity(max(0.65, self._opacity))
         font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.050)))
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
@@ -319,7 +332,7 @@ class OverlayWindow(QWidget):
         for name, rect in self._control_rects().items():
             p.save()
             if name == "lock":
-                p.setOpacity(max(0.50, self._opacity))
+                p.setOpacity(max(0.65, self._opacity))
             active = (
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
@@ -456,7 +469,7 @@ class OverlayWindow(QWidget):
             )
             text_alpha = round(185 + 70 * alpha)
             p.save()
-            p.setOpacity(max(0.50, self._opacity))
+            p.setOpacity(max(0.65, self._opacity))
             p.setFont(font)
             p.setPen(self._note_color(note.midi, text_alpha))
             p.drawText(QPoint(round(center_x - note_width / 2), round(y)), note.name)
@@ -473,36 +486,44 @@ class OverlayWindow(QWidget):
         for note in self.visual_notes:
             active[note.midi] = max(active.get(note.midi, 0), self._alpha(note, now) * note.strength)
         self._draw_active_auras(p, white, black, active)
+        ordered_white = sorted(white.values(), key=lambda rect: rect.left())
+        white_bed = QRectF(
+            ordered_white[0].left(),
+            ordered_white[0].top(),
+            ordered_white[-1].right() - ordered_white[0].left(),
+            ordered_white[0].height(),
+        )
+        resting_white = QLinearGradient(white_bed.topLeft(), white_bed.bottomLeft())
+        resting_white.setColorAt(0, QColor(230, 237, 246, 255))
+        resting_white.setColorAt(1, QColor(154, 170, 190, 250))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(resting_white)
+        p.drawRect(white_bed)
         for midi, rect in white.items():
             glow = active.get(midi, 0)
+            if not glow:
+                continue
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            # Resting keys sit roughly 10 percentage points above the glass.
-            base.setColorAt(0, QColor(230, 237, 246, 255))
-            base.setColorAt(1, QColor(154, 170, 190, 250))
-            if glow:
-                color = self._note_color(midi)
-                # White keys need a brighter center to offset their larger
-                # illuminated area and the pale resting-key substrate.
-                light = color.lighter(175)
-                center_color = color.lighter(135)
-                deep = color.darker(105)
-                alpha = round(185 + 70 * glow)
-                light.setAlpha(alpha)
-                center_color.setAlpha(alpha)
-                deep.setAlpha(round(alpha * 0.97))
-                base.setColorAt(0, light)
-                base.setColorAt(0.42, center_color)
-                base.setColorAt(1, deep)
-            edge = self._note_color(midi, round(58 + 90 * glow))
-            p.setPen(QPen(edge, 0.8))
+            color = self._note_color(midi)
+            # White keys need a brighter center to offset their larger
+            # illuminated area and the pale resting-key substrate.
+            light = color.lighter(175)
+            center_color = color.lighter(135)
+            deep = color.darker(105)
+            alpha = round(185 + 70 * glow)
+            light.setAlpha(alpha)
+            center_color.setAlpha(alpha)
+            deep.setAlpha(round(alpha * 0.97))
+            base.setColorAt(0, light)
+            base.setColorAt(0.42, center_color)
+            base.setColorAt(1, deep)
+            p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(base)
-            if glow:
-                p.save()
-                p.setOpacity(max(0.50, self._opacity))
-                p.drawRoundedRect(rect, 1.8, 1.8)
-                p.restore()
-            else:
-                p.drawRoundedRect(rect, 1.8, 1.8)
+            p.save()
+            p.setOpacity(max(0.65, self._opacity))
+            p.drawRect(rect)
+            p.restore()
+        self._draw_white_key_separators(p, white, black)
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
@@ -527,7 +548,7 @@ class OverlayWindow(QWidget):
             p.setBrush(base)
             if glow:
                 p.save()
-                p.setOpacity(max(0.50, self._opacity))
+                p.setOpacity(max(0.65, self._opacity))
                 p.drawRoundedRect(rect, 2, 2)
                 p.restore()
             else:
@@ -545,7 +566,7 @@ class OverlayWindow(QWidget):
         active: dict[int, float],
     ) -> None:
         p.save()
-        p.setOpacity(max(0.50, self._opacity))
+        p.setOpacity(max(0.65, self._opacity))
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         for midi, strength in active.items():
             is_white = midi in white
@@ -574,6 +595,24 @@ class OverlayWindow(QWidget):
             p.drawEllipse(center, radius, radius)
         p.restore()
 
+    def _draw_white_key_separators(
+        self,
+        p: QPainter,
+        white: dict[int, QRectF],
+        black: dict[int, QRectF],
+    ) -> None:
+        """Draw a white-key seam only where no black key covers the boundary."""
+        ordered = sorted(white.values(), key=lambda rect: rect.left())
+        black_centers = [rect.center().x() for rect in black.values()]
+        p.save()
+        p.setPen(QPen(QColor(10, 19, 31, 95), 0.65))
+        for left, right in zip(ordered, ordered[1:]):
+            boundary = right.left()
+            if any(abs(center - boundary) < 1.0 for center in black_centers):
+                continue
+            p.drawLine(QLineF(boundary, left.top() + 1, boundary, left.bottom() - 1))
+        p.restore()
+
     def _draw_active_auras(
         self,
         p: QPainter,
@@ -585,7 +624,7 @@ class OverlayWindow(QWidget):
             return
         keyboard_top = next(iter(white.values())).top()
         p.save()
-        p.setOpacity(max(0.50, self._opacity))
+        p.setOpacity(max(0.65, self._opacity))
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         p.setPen(Qt.PenStyle.NoPen)
         for midi, strength in active.items():
@@ -618,7 +657,7 @@ class OverlayWindow(QWidget):
         active: dict[int, float],
     ) -> None:
         p.save()
-        p.setOpacity(max(0.50, self._opacity))
+        p.setOpacity(max(0.65, self._opacity))
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         for midi, strength in active.items():
             rect = white.get(midi)
@@ -629,7 +668,10 @@ class OverlayWindow(QWidget):
             color = self._note_color(midi, round(225 * strength))
             p.setPen(QPen(color, 1.25))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(rect.adjusted(0.7, 0.7, -0.7, -0.7), 2, 2)
+            if midi in white:
+                p.drawLine(QLineF(rect.left() + 1, rect.bottom() - 1, rect.right() - 1, rect.bottom() - 1))
+            else:
+                p.drawRoundedRect(rect.adjusted(0.7, 0.7, -0.7, -0.7), 2, 2)
             p.setPen(QPen(self._note_color(midi, round(245 * strength)), 1.8))
             p.drawLine(QLineF(rect.left() + 1.5, rect.top() + 1.2, rect.right() - 1.5, rect.top() + 1.2))
         p.restore()
@@ -703,9 +745,9 @@ class OverlayWindow(QWidget):
         elif name == "larger":
             self._set_scale(self._scale_percent + 10)
         elif name == "opacity":
-            levels = (20, 30, 40, 50, 60, 70, 80, 85, 90, 95, 100)
+            levels = (25, 35, 45, 55, 65, 75, 85, 90, 95, 100)
             current = round(self._opacity * 100)
-            next_level = next((level for level in levels if level > current), 20)
+            next_level = next((level for level in levels if level > current), 25)
             self._opacity = next_level / 100
         self.update()
 
@@ -715,8 +757,6 @@ class OverlayWindow(QWidget):
         top.triggered.connect(self._toggle_topmost)
         locked = QAction("锁定位置", self, checkable=True, checked=self._position_locked)
         locked.triggered.connect(self._toggle_position_lock)
-        through = QAction("点击穿透", self, checkable=True, checked=self._click_through)
-        through.triggered.connect(self._toggle_click_through)
         status = QAction("显示参数面板", self, checkable=True, checked=self._show_status)
         status.triggered.connect(lambda checked: self._set_show_status(checked))
         minimal = QAction("纯键盘模式", self, checkable=True, checked=self._keyboard_only)
@@ -725,7 +765,6 @@ class OverlayWindow(QWidget):
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(top)
         menu.addAction(locked)
-        menu.addAction(through)
         menu.addAction(minimal)
         menu.addSeparator()
         model_menu = menu.addMenu("识别模型")
@@ -766,6 +805,126 @@ class OverlayWindow(QWidget):
         if self.config.model != model_name:
             self._select_model(model_name)
 
+    @pyqtSlot(str, str)
+    def _show_model_download_dialog(self, destination: str, url: str) -> None:
+        if self._model_download_prompt_shown:
+            return
+        self._model_download_prompt_shown = True
+        box = QMessageBox(self)
+        box.setWindowTitle("Piano GPU 模型未安装")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(
+            "Piano GPU 需要单独下载约 165MB 的模型权重。<br><br>"
+            "程序可以自动下载、校验并安装到：<br>"
+            f"<code>{destination}</code>"
+        )
+        install = box.addButton("自动下载并安装", QMessageBox.ButtonRole.AcceptRole)
+        browser = box.addButton("浏览器手动下载", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("继续使用 Basic Pitch", QMessageBox.ButtonRole.AcceptRole)
+        box.exec()
+        if box.clickedButton() is install:
+            self._download_model(destination, url)
+        elif box.clickedButton() is browser:
+            QDesktopServices.openUrl(QUrl(url))
+            self._model_download_prompt_shown = False
+        else:
+            self._model_download_prompt_shown = False
+
+    def _download_model(self, destination: str, url: str) -> None:
+        if self._model_download_reply is not None:
+            return
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_suffix(target.suffix + ".part")
+        try:
+            self._model_download_file = partial.open("wb")
+        except OSError as exc:
+            QMessageBox.critical(self, "无法保存模型", str(exc))
+            return
+
+        progress = QProgressDialog("正在下载 Piano GPU 模型…", "取消", 0, 100, self)
+        progress.setWindowTitle("Piano Shadow 模型安装")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        self._model_download_progress = progress
+
+        request = QNetworkRequest(QUrl(url))
+        request.setAttribute(
+            QNetworkRequest.Attribute.RedirectPolicyAttribute,
+            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+        )
+        reply = self._model_download_manager.get(request)
+        self._model_download_reply = reply
+        reply.readyRead.connect(
+            lambda: self._model_download_file.write(bytes(reply.readAll()))
+            if self._model_download_file is not None
+            else None
+        )
+        reply.downloadProgress.connect(self._update_model_download_progress)
+        progress.canceled.connect(reply.abort)
+        reply.finished.connect(
+            lambda: self._finish_model_download(target, partial, reply)
+        )
+
+    def _update_model_download_progress(self, received: int, total: int) -> None:
+        if self._model_download_progress is None:
+            return
+        if total > 0:
+            self._model_download_progress.setValue(
+                min(100, round(received * 100 / total))
+            )
+            self._model_download_progress.setLabelText(
+                f"正在下载 Piano GPU 模型… "
+                f"{received / 1048576:.1f} / {total / 1048576:.1f} MB"
+            )
+        else:
+            self._model_download_progress.setLabelText(
+                f"正在下载 Piano GPU 模型… {received / 1048576:.1f} MB"
+            )
+
+    def _finish_model_download(
+        self, target: Path, partial: Path, reply: QNetworkReply
+    ) -> None:
+        if self._model_download_file is not None:
+            self._model_download_file.close()
+            self._model_download_file = None
+        progress = self._model_download_progress
+        self._model_download_progress = None
+        self._model_download_reply = None
+        if progress is not None:
+            progress.close()
+
+        from config import PIANO_MODEL_MIN_BYTES
+
+        error = reply.error()
+        message = reply.errorString()
+        reply.deleteLater()
+        if (
+            error != QNetworkReply.NetworkError.NoError
+            or not partial.exists()
+            or partial.stat().st_size < PIANO_MODEL_MIN_BYTES
+        ):
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+            QMessageBox.warning(
+                self,
+                "模型下载未完成",
+                f"{message}\n\n可以稍后从托盘菜单重新下载。",
+            )
+            return
+        try:
+            os.replace(partial, target)
+        except OSError as exc:
+            QMessageBox.critical(self, "模型安装失败", str(exc))
+            return
+        QMessageBox.information(self, "模型安装完成", "Piano GPU 模型已安装。")
+        self._model_download_prompt_shown = False
+        if self.config.model != "piano-gpu":
+            self._select_model("piano-gpu")
+
     def _opacity_action(self, menu: QMenu) -> QWidgetAction:
         action = QWidgetAction(menu)
         row = QWidget(menu)
@@ -775,7 +934,7 @@ class OverlayWindow(QWidget):
         value = QLabel(f"{round(self._opacity * 100)}%", row)
         value.setMinimumWidth(34)
         slider = QSlider(Qt.Orientation.Horizontal, row)
-        slider.setRange(20, 100)
+        slider.setRange(25, 100)
         slider.setValue(round(self._opacity * 100))
         slider.setMinimumWidth(145)
         slider.setToolTip("调节整个悬浮窗的可见度")
@@ -907,14 +1066,61 @@ class OverlayWindow(QWidget):
     def _toggle_position_lock(self, enabled: bool) -> None:
         self._position_locked = enabled
         self._drag_offset = None
+        self._toggle_click_through(enabled)
         self.setCursor(
             Qt.CursorShape.ArrowCursor if enabled else Qt.CursorShape.OpenHandCursor
         )
 
     def _toggle_click_through(self, enabled: bool) -> None:
         self._click_through = enabled
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                hwnd = wintypes.HWND(int(self.winId()))
+                get_style = ctypes.windll.user32.GetWindowLongPtrW
+                set_style = ctypes.windll.user32.SetWindowLongPtrW
+                get_style.argtypes = (wintypes.HWND, ctypes.c_int)
+                get_style.restype = ctypes.c_ssize_t
+                set_style.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t)
+                set_style.restype = ctypes.c_ssize_t
+                ex_style = get_style(hwnd, -20)  # GWL_EXSTYLE
+                ws_ex_transparent = 0x00000020
+                ws_ex_layered = 0x00080000
+                if enabled:
+                    ex_style |= ws_ex_transparent | ws_ex_layered
+                else:
+                    ex_style &= ~ws_ex_transparent
+                set_style(hwnd, -20, ex_style)
+                set_window_pos = ctypes.windll.user32.SetWindowPos
+                set_window_pos.argtypes = (
+                    wintypes.HWND,
+                    wintypes.HWND,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    wintypes.UINT,
+                )
+                set_window_pos.restype = wintypes.BOOL
+                set_window_pos(
+                    hwnd,
+                    wintypes.HWND(0),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0x0001 | 0x0002 | 0x0010 | 0x0020,
+                )
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+                return
+            except Exception as exc:
+                self.set_status(f"Windows 鼠标穿透切换失败（{exc}）", True)
+        old_position = self.pos()
         self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
         self.show()
+        self.move(old_position)
 
     def _set_show_status(self, enabled: bool) -> None:
         self._show_status = enabled

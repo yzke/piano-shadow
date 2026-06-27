@@ -20,6 +20,7 @@ if (Test-Path $BuildRoot) {
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $DistRoot | Out-Null
 Copy-Item (Join-Path $ProjectRoot "*.py") $BuildRoot
+Copy-Item (Join-Path $ProjectRoot "assets") $BuildRoot -Recurse
 
 & $VenvPython -m pip install "pyinstaller>=6.10,<7"
 if ($LASTEXITCODE -ne 0) {
@@ -33,7 +34,9 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --name "PianoShadow-Windows-x64" `
+        --name "PianoShadow-v0.1.1-Windows-x64" `
+        --icon (Join-Path $BuildRoot "assets\piano-shadow.ico") `
+        --add-data "$(Join-Path $BuildRoot 'assets\piano-shadow-icon.png');assets" `
         --collect-all basic_pitch `
         --collect-all soundcard `
         --collect-submodules onnxruntime `
@@ -47,11 +50,11 @@ try {
         throw "PyInstaller build failed."
     }
     Copy-Item `
-        (Join-Path $BuildRoot "dist\PianoShadow-Windows-x64.exe") `
-        (Join-Path $DistRoot "PianoShadow-Windows-x64.exe") `
+        (Join-Path $BuildRoot "dist\PianoShadow-v0.1.1-Windows-x64.exe") `
+        (Join-Path $DistRoot "PianoShadow-v0.1.1-Windows-x64.exe") `
         -Force
 } finally {
     Pop-Location
 }
 
-Write-Host "Built: $(Join-Path $DistRoot 'PianoShadow-Windows-x64.exe')" -ForegroundColor Green
+Write-Host "Built: $(Join-Path $DistRoot 'PianoShadow-v0.1.1-Windows-x64.exe')" -ForegroundColor Green

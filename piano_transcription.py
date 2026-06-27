@@ -11,7 +11,12 @@ from collections.abc import Callable
 
 import numpy as np
 
-from config import AppConfig
+from config import (
+    AppConfig,
+    PIANO_MODEL_MIN_BYTES,
+    PIANO_MODEL_PATH,
+    PIANO_MODEL_URL,
+)
 from note_model import NoteEvent, filter_and_merge
 
 
@@ -25,12 +30,14 @@ class PianoGpuTranscriptionWorker:
         on_notes: Callable[[list[NoteEvent]], None],
         on_status: Callable[[str, bool], None],
         on_fallback: Callable[[str], None],
+        on_download_required: Callable[[str, str], None],
     ) -> None:
         self.config = config
         self.input = input_queue
         self.on_notes = on_notes
         self.on_status = on_status
         self.on_fallback = on_fallback
+        self.on_download_required = on_download_required
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -44,6 +51,14 @@ class PianoGpuTranscriptionWorker:
             self._thread.join(timeout=2)
 
     def _run(self) -> None:
+        if (
+            not PIANO_MODEL_PATH.exists()
+            or PIANO_MODEL_PATH.stat().st_size < PIANO_MODEL_MIN_BYTES
+        ):
+            self.on_status("Piano GPU 模型未安装 · 自动回退 Basic Pitch", True)
+            self.on_download_required(str(PIANO_MODEL_PATH), PIANO_MODEL_URL)
+            self.on_fallback("basic-pitch")
+            return
         previous_logging_level = logging.root.manager.disable
         logging.disable(logging.WARNING)
         try:
@@ -71,6 +86,7 @@ class PianoGpuTranscriptionWorker:
                 transcriptor = PianoTranscription(
                     device="cuda",
                     segment_samples=sample_rate * 2,
+                    checkpoint_path=str(PIANO_MODEL_PATH),
                 )
             if hasattr(transcriptor.model, "module") and torch.cuda.device_count() == 1:
                 transcriptor.model = transcriptor.model.module

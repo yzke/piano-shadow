@@ -23,7 +23,6 @@ class WindowsOverlayTests(unittest.TestCase):
         hwnd = int(window.winId())
         get_style = ctypes.windll.user32.GetWindowLongPtrW
         ws_ex_topmost = 0x00000008
-
         window._toggle_topmost(False)
         self.app.processEvents()
         self.assertFalse(get_style(hwnd, -20) & ws_ex_topmost)
@@ -33,6 +32,18 @@ class WindowsOverlayTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(get_style(hwnd, -20) & ws_ex_topmost)
         self.assertEqual(window.pos(), position)
+        window.close()
+
+    def test_lock_controls_mouse_passthrough(self) -> None:
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window.show()
+        self.app.processEvents()
+        window._toggle_position_lock(True)
+        self.assertTrue(window._position_locked)
+        self.assertTrue(window._click_through)
+        window._toggle_position_lock(False)
+        self.assertFalse(window._position_locked)
+        self.assertFalse(window._click_through)
         window.close()
 
     def test_model_chip_switches_backend_selection(self):

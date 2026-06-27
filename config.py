@@ -3,7 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import sys
+from pathlib import Path
+
+PIANO_MODEL_URL = (
+    "https://zenodo.org/records/4034264/files/"
+    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
+)
+PIANO_MODEL_PATH = (
+    Path.home()
+    / "piano_transcription_inference_data"
+    / "note_F1=0.9677_pedal_F1=0.9186.pth"
+)
+PIANO_MODEL_MIN_BYTES = 160_000_000
 from dataclasses import dataclass
 
 
@@ -23,7 +34,6 @@ class AppConfig:
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
-    default_model = "basic-pitch" if getattr(sys, "frozen", False) else "piano-gpu"
     parser = argparse.ArgumentParser(
         prog="Piano Shadow",
         description="桌面钢琴音符透明悬浮窗",
@@ -45,7 +55,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     parser.add_argument(
         "--model",
         choices=("basic-pitch", "piano-gpu"),
-        default=default_model,
+        default="piano-gpu",
         help="音频识别模型",
     )
     ns = parser.parse_args(argv)
