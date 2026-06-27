@@ -34,7 +34,7 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --name "PianoShadow-v0.1.2-Windows-x64" `
+        --name "PianoShadow-v0.1.3-Windows-x64" `
         --icon (Join-Path $BuildRoot "assets\piano-shadow.ico") `
         --add-data "$(Join-Path $BuildRoot 'assets\piano-shadow-icon.png');assets" `
         --collect-all basic_pitch `
@@ -50,11 +50,11 @@ try {
         throw "PyInstaller build failed."
     }
     Copy-Item `
-        (Join-Path $BuildRoot "dist\PianoShadow-v0.1.2-Windows-x64.exe") `
-        (Join-Path $DistRoot "PianoShadow-v0.1.2-Windows-x64.exe") `
+        (Join-Path $BuildRoot "dist\PianoShadow-v0.1.3-Windows-x64.exe") `
+        (Join-Path $DistRoot "PianoShadow-v0.1.3-Windows-x64.exe") `
         -Force
 } finally {
     Pop-Location
 }
 
-Write-Host "Built: $(Join-Path $DistRoot 'PianoShadow-v0.1.2-Windows-x64.exe')" -ForegroundColor Green
+Write-Host "Built: $(Join-Path $DistRoot 'PianoShadow-v0.1.3-Windows-x64.exe')" -ForegroundColor Green

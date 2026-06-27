@@ -708,6 +708,32 @@ class OverlayWindow(QWidget):
                 return name
         return None
 
+    def _locked_hit_is_interactive(self, point: QPoint) -> bool:
+        """Keep only the lock control clickable while the overlay is locked."""
+        lock_rect = self._control_rects().get("lock")
+        return bool(
+            lock_rect
+            and lock_rect.adjusted(-4, -4, 4, 4).contains(point.x(), point.y())
+        )
+
+    def nativeEvent(self, event_type, message):
+        """On Windows, pass locked-window clicks through except on the lock icon."""
+        if platform.system() == "Windows" and self._click_through:
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+                if msg.message == 0x0084:  # WM_NCHITTEST
+                    x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                    y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                    local = self.mapFromGlobal(QPoint(x, y))
+                    if not self._locked_hit_is_interactive(local):
+                        return True, -1  # HTTRANSPARENT
+            except Exception:
+                pass
+        return False, 0
+
     def _begin_move(self, event: QMouseEvent) -> None:
         self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -1088,10 +1114,10 @@ class OverlayWindow(QWidget):
                 ex_style = get_style(hwnd, -20)  # GWL_EXSTYLE
                 ws_ex_transparent = 0x00000020
                 ws_ex_layered = 0x00080000
-                if enabled:
-                    ex_style |= ws_ex_transparent | ws_ex_layered
-                else:
-                    ex_style &= ~ws_ex_transparent
+                # Whole-window WS_EX_TRANSPARENT would also disable the lock
+                # button. Selective passthrough is handled in nativeEvent.
+                ex_style |= ws_ex_layered
+                ex_style &= ~ws_ex_transparent
                 set_style(hwnd, -20, ex_style)
                 set_window_pos = ctypes.windll.user32.SetWindowPos
                 set_window_pos.argtypes = (
@@ -1113,14 +1139,13 @@ class OverlayWindow(QWidget):
                     0,
                     0x0001 | 0x0002 | 0x0010 | 0x0020,
                 )
-                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, enabled)
+                self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
                 return
             except Exception as exc:
                 self.set_status(f"Windows 鼠标穿透切换失败（{exc}）", True)
-        old_position = self.pos()
-        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, enabled)
-        self.show()
-        self.move(old_position)
+        # Qt has no portable per-pixel input passthrough. Keep the lock button
+        # usable on non-Windows platforms instead of making unlock impossible.
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
 
     def _set_show_status(self, enabled: bool) -> None:
         self._show_status = enabled

@@ -38,9 +38,17 @@ class WindowsOverlayTests(unittest.TestCase):
         window = OverlayWindow(AppConfig(demo_mode=True))
         window.show()
         self.app.processEvents()
+        get_style = ctypes.windll.user32.GetWindowLongPtrW
+        get_style.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        get_style.restype = ctypes.c_ssize_t
+        ws_ex_transparent = 0x00000020
         window._toggle_position_lock(True)
         self.assertTrue(window._position_locked)
         self.assertTrue(window._click_through)
+        self.assertFalse(get_style(int(window.winId()), -20) & ws_ex_transparent)
+        lock_center = window._control_rects()["lock"].center().toPoint()
+        self.assertTrue(window._locked_hit_is_interactive(lock_center))
+        self.assertFalse(window._locked_hit_is_interactive(window.rect().center()))
         window._toggle_position_lock(False)
         self.assertFalse(window._position_locked)
         self.assertFalse(window._click_through)
