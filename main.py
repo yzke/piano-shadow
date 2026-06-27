@@ -13,7 +13,13 @@ from PyQt6.QtGui import QAction, QActionGroup, QGuiApplication, QIcon
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from audio_capture import SystemAudioCapture
-from config import AppConfig, PIANO_MODEL_PATH, PIANO_MODEL_URL, parse_args
+from config import (
+    AppConfig,
+    PIANO_MODEL_PATH,
+    PIANO_MODEL_URL,
+    ensure_data_layout,
+    parse_args,
+)
 from note_model import NoteEvent, is_piano_note
 from piano_transcription import PianoGpuTranscriptionWorker
 from transcription import TranscriptionWorker
@@ -91,7 +97,7 @@ class TrayController:
 
         model_menu = self.menu.addMenu("识别模型")
         basic = QAction("Basic Pitch · CPU", model_menu, checkable=True)
-        gpu = QAction("Piano GPU", model_menu, checkable=True)
+        gpu = QAction("Piano GPU · 推荐", model_menu, checkable=True)
         group = QActionGroup(model_menu)
         group.setExclusive(True)
         group.addAction(basic)
@@ -136,6 +142,7 @@ class TrayController:
 
 
 def run(config: AppConfig) -> int:
+    ensure_data_layout()
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         QtHighDpiScaleFactorRoundingPolicy
     )

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import math
+import hashlib
 import os
 import platform
+import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +27,6 @@ from PyQt6.QtGui import (
     QPen,
     QRadialGradient,
 )
-from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -77,6 +79,8 @@ class OverlayWindow(QWidget):
     model_selected = pyqtSignal(str)
     model_fallback_received = pyqtSignal(str)
     model_download_required = pyqtSignal(str, str)
+    model_download_progress_received = pyqtSignal(int, int)
+    model_download_finished_received = pyqtSignal(bool, str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -91,18 +95,24 @@ class OverlayWindow(QWidget):
         self._keyboard_only = False
         self._click_through = False
         self._model_download_prompt_shown = False
-        self._model_download_manager = QNetworkAccessManager(self)
-        self._model_download_reply: QNetworkReply | None = None
-        self._model_download_file = None
+        self._model_download_thread: threading.Thread | None = None
+        self._model_download_cancel = threading.Event()
         self._model_download_progress: QProgressDialog | None = None
         self._show_status = True
         self._opacity = 0.85
+        self._key_opacity_mode = 0  # 0=normal, 1=active 65%, 2=active 100%
         self._scale_percent = 100
         self._setup_window()
         self.notes_received.connect(self.add_notes)
         self.status_received.connect(self.set_status)
         self.model_fallback_received.connect(self._handle_model_fallback)
         self.model_download_required.connect(self._show_model_download_dialog)
+        self.model_download_progress_received.connect(
+            self._update_model_download_progress
+        )
+        self.model_download_finished_received.connect(
+            self._finish_model_download
+        )
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -496,9 +506,10 @@ class OverlayWindow(QWidget):
         resting_white = QLinearGradient(white_bed.topLeft(), white_bed.bottomLeft())
         resting_white.setColorAt(0, QColor(230, 237, 246, 255))
         resting_white.setColorAt(1, QColor(154, 170, 190, 250))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(resting_white)
-        p.drawRect(white_bed)
+        if self._key_opacity_mode == 0:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(resting_white)
+            p.drawRect(white_bed)
         for midi, rect in white.items():
             glow = active.get(midi, 0)
             if not glow:
@@ -520,10 +531,11 @@ class OverlayWindow(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(base)
             p.save()
-            p.setOpacity(max(0.65, self._opacity))
+            p.setOpacity(self._active_key_opacity())
             p.drawRect(rect)
             p.restore()
-        self._draw_white_key_separators(p, white, black)
+        if self._key_opacity_mode == 0:
+            self._draw_white_key_separators(p, white, black)
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
@@ -548,15 +560,22 @@ class OverlayWindow(QWidget):
             p.setBrush(base)
             if glow:
                 p.save()
-                p.setOpacity(max(0.65, self._opacity))
+                p.setOpacity(self._active_key_opacity())
                 p.drawRoundedRect(rect, 2, 2)
                 p.restore()
-            else:
+            elif self._key_opacity_mode == 0:
                 p.drawRoundedRect(rect, 2, 2)
         # Draw center glows only after both key layers exist. Previously black
         # keys covered part of every neighboring white-key glow.
         self._draw_active_center_glows(p, white, black, active)
         self._draw_active_key_edges(p, white, black, active)
+
+    def _active_key_opacity(self) -> float:
+        if self._key_opacity_mode == 1:
+            return 0.65
+        if self._key_opacity_mode == 2:
+            return 1.0
+        return max(0.65, self._opacity)
 
     def _draw_active_center_glows(
         self,
@@ -566,7 +585,7 @@ class OverlayWindow(QWidget):
         active: dict[int, float],
     ) -> None:
         p.save()
-        p.setOpacity(max(0.65, self._opacity))
+        p.setOpacity(self._active_key_opacity())
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         for midi, strength in active.items():
             is_white = midi in white
@@ -624,7 +643,7 @@ class OverlayWindow(QWidget):
             return
         keyboard_top = next(iter(white.values())).top()
         p.save()
-        p.setOpacity(max(0.65, self._opacity))
+        p.setOpacity(self._active_key_opacity())
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         p.setPen(Qt.PenStyle.NoPen)
         for midi, strength in active.items():
@@ -657,7 +676,7 @@ class OverlayWindow(QWidget):
         active: dict[int, float],
     ) -> None:
         p.save()
-        p.setOpacity(max(0.65, self._opacity))
+        p.setOpacity(self._active_key_opacity())
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
         for midi, strength in active.items():
             rect = white.get(midi)
@@ -773,8 +792,19 @@ class OverlayWindow(QWidget):
         elif name == "opacity":
             levels = (25, 35, 45, 55, 65, 75, 85, 90, 95, 100)
             current = round(self._opacity * 100)
-            next_level = next((level for level in levels if level > current), 25)
-            self._opacity = next_level / 100
+            if self._key_opacity_mode == 1:
+                self._key_opacity_mode = 2
+                self.set_status("键盘底键透明 · 弹奏键 100%", False)
+            elif self._key_opacity_mode == 2:
+                self._key_opacity_mode = 0
+                self._opacity = 0.25
+                self.set_status("整体透明度 25%", False)
+            elif current >= 100:
+                self._key_opacity_mode = 1
+                self.set_status("键盘底键透明 · 弹奏键 65%", False)
+            else:
+                next_level = next(level for level in levels if level > current)
+                self._opacity = next_level / 100
         self.update()
 
     def _show_menu(self, position: QPoint) -> None:
@@ -798,7 +828,7 @@ class OverlayWindow(QWidget):
         model_group.setExclusive(True)
         for title, model_name in (
             ("Basic Pitch · 快速通用", "basic-pitch"),
-            ("Piano GPU · 钢琴高精度", "piano-gpu"),
+            ("Piano GPU · 推荐 · 钢琴高精度", "piano-gpu"),
         ):
             action = QAction(
                 title,
@@ -857,41 +887,71 @@ class OverlayWindow(QWidget):
             self._model_download_prompt_shown = False
 
     def _download_model(self, destination: str, url: str) -> None:
-        if self._model_download_reply is not None:
+        if self._model_download_thread and self._model_download_thread.is_alive():
             return
         target = Path(destination)
-        target.parent.mkdir(parents=True, exist_ok=True)
         partial = target.with_suffix(target.suffix + ".part")
-        try:
-            self._model_download_file = partial.open("wb")
-        except OSError as exc:
-            QMessageBox.critical(self, "无法保存模型", str(exc))
-            return
-
         progress = QProgressDialog("正在下载 Piano GPU 模型…", "取消", 0, 100, self)
         progress.setWindowTitle("Piano Shadow 模型安装")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
         progress.setValue(0)
         self._model_download_progress = progress
+        self._model_download_cancel.clear()
+        progress.canceled.connect(self._model_download_cancel.set)
+        self._model_download_thread = threading.Thread(
+            target=self._download_model_worker,
+            args=(target, partial, url),
+            name="model-download",
+            daemon=True,
+        )
+        self._model_download_thread.start()
 
-        request = QNetworkRequest(QUrl(url))
-        request.setAttribute(
-            QNetworkRequest.Attribute.RedirectPolicyAttribute,
-            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
-        )
-        reply = self._model_download_manager.get(request)
-        self._model_download_reply = reply
-        reply.readyRead.connect(
-            lambda: self._model_download_file.write(bytes(reply.readAll()))
-            if self._model_download_file is not None
-            else None
-        )
-        reply.downloadProgress.connect(self._update_model_download_progress)
-        progress.canceled.connect(reply.abort)
-        reply.finished.connect(
-            lambda: self._finish_model_download(target, partial, reply)
-        )
+    def _download_model_worker(
+        self, target: Path, partial: Path, url: str
+    ) -> None:
+        from config import PIANO_MODEL_MIN_BYTES, PIANO_MODEL_SHA256
+
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "PianoShadow/0.1"}
+            )
+            with urllib.request.urlopen(request, timeout=45) as response:
+                total = int(response.headers.get("Content-Length", "0"))
+                received = 0
+                with partial.open("wb") as output:
+                    while not self._model_download_cancel.is_set():
+                        block = response.read(1024 * 1024)
+                        if not block:
+                            break
+                        output.write(block)
+                        received += len(block)
+                        self.model_download_progress_received.emit(received, total)
+            if self._model_download_cancel.is_set():
+                raise RuntimeError("下载已取消")
+            if not partial.exists() or partial.stat().st_size < PIANO_MODEL_MIN_BYTES:
+                actual = partial.stat().st_size if partial.exists() else 0
+                raise RuntimeError(
+                    f"文件不完整（收到 {actual / 1048576:.1f} MB）"
+                )
+            digest = hashlib.sha256()
+            with partial.open("rb") as downloaded:
+                for block in iter(lambda: downloaded.read(4 * 1024 * 1024), b""):
+                    digest.update(block)
+            if digest.hexdigest() != PIANO_MODEL_SHA256:
+                raise RuntimeError("模型文件校验失败，请更换下载源后重试")
+            os.replace(partial, target)
+        except Exception as exc:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.model_download_finished_received.emit(False, str(exc))
+            return
+        self.model_download_finished_received.emit(True, str(target))
 
     def _update_model_download_progress(self, received: int, total: int) -> None:
         if self._model_download_progress is None:
@@ -909,42 +969,20 @@ class OverlayWindow(QWidget):
                 f"正在下载 Piano GPU 模型… {received / 1048576:.1f} MB"
             )
 
-    def _finish_model_download(
-        self, target: Path, partial: Path, reply: QNetworkReply
-    ) -> None:
-        if self._model_download_file is not None:
-            self._model_download_file.close()
-            self._model_download_file = None
+    @pyqtSlot(bool, str)
+    def _finish_model_download(self, success: bool, message: str) -> None:
         progress = self._model_download_progress
         self._model_download_progress = None
-        self._model_download_reply = None
+        self._model_download_thread = None
         if progress is not None:
             progress.close()
-
-        from config import PIANO_MODEL_MIN_BYTES
-
-        error = reply.error()
-        message = reply.errorString()
-        reply.deleteLater()
-        if (
-            error != QNetworkReply.NetworkError.NoError
-            or not partial.exists()
-            or partial.stat().st_size < PIANO_MODEL_MIN_BYTES
-        ):
-            try:
-                partial.unlink(missing_ok=True)
-            except OSError:
-                pass
+            progress.deleteLater()
+        if not success:
             QMessageBox.warning(
                 self,
                 "模型下载未完成",
                 f"{message}\n\n可以稍后从托盘菜单重新下载。",
             )
-            return
-        try:
-            os.replace(partial, target)
-        except OSError as exc:
-            QMessageBox.critical(self, "模型安装失败", str(exc))
             return
         QMessageBox.information(self, "模型安装完成", "Piano GPU 模型已安装。")
         self._model_download_prompt_shown = False
@@ -957,7 +995,13 @@ class OverlayWindow(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 5, 12, 7)
         label = QLabel("透明度", row)
-        value = QLabel(f"{round(self._opacity * 100)}%", row)
+        special_labels = {1: "键透/65", 2: "键透/100"}
+        value = QLabel(
+            special_labels.get(
+                self._key_opacity_mode, f"{round(self._opacity * 100)}%"
+            ),
+            row,
+        )
         value.setMinimumWidth(34)
         slider = QSlider(Qt.Orientation.Horizontal, row)
         slider.setRange(25, 100)
@@ -966,6 +1010,7 @@ class OverlayWindow(QWidget):
         slider.setToolTip("调节整个悬浮窗的可见度")
 
         def change(percent: int) -> None:
+            self._key_opacity_mode = 0
             self._opacity = percent / 100
             value.setText(f"{percent}%")
             self.update()

@@ -3,18 +3,38 @@
 from __future__ import annotations
 
 import argparse
+import os
+import platform
 from pathlib import Path
 
 PIANO_MODEL_URL = (
     "https://zenodo.org/records/4034264/files/"
     "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
 )
-PIANO_MODEL_PATH = (
-    Path.home()
-    / "piano_transcription_inference_data"
-    / "note_F1=0.9677_pedal_F1=0.9186.pth"
+APP_DATA_DIR = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    / "PianoShadow"
+    if platform.system() == "Windows"
+    else Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    / "PianoShadow"
+)
+MODEL_DIR = APP_DATA_DIR / "models"
+LOG_DIR = APP_DATA_DIR / "logs"
+PIANO_MODEL_FILENAME = "note_F1=0.9677_pedal_F1=0.9186.pth"
+PIANO_MODEL_PATH = MODEL_DIR / PIANO_MODEL_FILENAME
+LEGACY_PIANO_MODEL_PATH = (
+    Path.home() / "piano_transcription_inference_data" / PIANO_MODEL_FILENAME
 )
 PIANO_MODEL_MIN_BYTES = 160_000_000
+PIANO_MODEL_SHA256 = "c3fa9730725bf4a762f1c14bc80cd5986eacda01b026f5a4a2525cd607876141"
+
+
+def ensure_data_layout() -> None:
+    """Create writable per-user directories and preserve an existing model."""
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if not PIANO_MODEL_PATH.exists() and LEGACY_PIANO_MODEL_PATH.exists():
+        os.replace(LEGACY_PIANO_MODEL_PATH, PIANO_MODEL_PATH)
 from dataclasses import dataclass
 
 

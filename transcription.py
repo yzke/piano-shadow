@@ -5,7 +5,6 @@ from __future__ import annotations
 import queue
 import threading
 import tempfile
-import time
 import wave
 import contextlib
 import io
@@ -33,7 +32,6 @@ class TranscriptionWorker:
         self.on_status = on_status
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_emitted: dict[int, float] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, name="basic-pitch", daemon=True)
@@ -63,19 +61,43 @@ class TranscriptionWorker:
             self.on_status(f"Basic Pitch 模型加载失败（{exc}）", True)
             return
         self.on_status("Listening · Basic Pitch ready", False)
-        pending = np.empty(0, dtype=np.float32)
-        target_frames = round(self.config.sample_rate * self.config.chunk_seconds)
+        # Match the GPU worker's temporal design: infer over a stable rolling
+        # context, advance by a smaller hop, and publish only new onsets.
+        context_seconds = max(1.5, min(2.5, self.config.chunk_seconds * 4))
+        hop_seconds = max(0.25, min(0.75, self.config.chunk_seconds))
+        context_frames = round(self.config.sample_rate * context_seconds)
+        hop_frames = round(self.config.sample_rate * hop_seconds)
+        recent_frames = round(self.config.sample_rate * 0.25)
+        rolling = np.empty(0, dtype=np.float32)
+        frames_since_inference = 0
+        stream_frames = 0
+        first_window = True
+        last_onsets: dict[int, float] = {}
         while not self._stop.is_set():
             try:
                 chunk = self.input.get(timeout=0.25)
             except queue.Empty:
                 continue
-            pending = np.concatenate((pending, chunk))
-            if pending.size < target_frames:
+            chunks = [chunk]
+            while True:
+                try:
+                    chunks.append(self.input.get_nowait())
+                except queue.Empty:
+                    break
+            chunk = np.concatenate(chunks)
+            stream_frames += chunk.size
+            frames_since_inference += chunk.size
+            rolling = np.concatenate((rolling, chunk))[-context_frames:]
+            if rolling.size < context_frames or frames_since_inference < hop_frames:
                 continue
-            audio = np.ascontiguousarray(pending[-target_frames:])
-            pending = np.empty(0, dtype=np.float32)
-            rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+            advanced_frames = frames_since_inference
+            frames_since_inference = 0
+            audio = np.ascontiguousarray(rolling)
+            rms = float(
+                np.sqrt(
+                    np.mean(np.square(audio[-recent_frames:]), dtype=np.float64)
+                )
+            )
             if rms < self.config.min_amp:
                 self.on_status("Listening · 等待清晰的钢琴声…", False)
                 continue
@@ -93,48 +115,59 @@ class TranscriptionWorker:
                             model,
                             onset_threshold=max(0.58, self.config.min_confidence),
                             frame_threshold=max(0.38, self.config.min_confidence * 0.78),
-                            minimum_note_length=110,
+                            minimum_note_length=90,
                             melodia_trick=False,
                         )
                 finally:
                     wav_path.unlink(missing_ok=True)
-                events = [
-                    NoteEvent(
-                        midi=int(pitch),
-                        start=float(start),
-                        end=float(end),
-                        velocity=max(1, min(127, round(float(amplitude) * 127))),
-                        confidence=float(amplitude),
+                advanced_seconds = advanced_frames / self.config.sample_rate
+                cutoff = (
+                    0.0
+                    if first_window
+                    else max(0.0, context_seconds - advanced_seconds - 0.12)
+                )
+                window_start = (
+                    stream_frames / self.config.sample_rate - context_seconds
+                )
+                events: list[NoteEvent] = []
+                for start, end, pitch, amplitude, *_ in raw_notes:
+                    onset = float(start)
+                    if onset < cutoff:
+                        continue
+                    midi = int(pitch)
+                    absolute_onset = window_start + onset
+                    # Suppress overlap re-detections without blocking genuine
+                    # repeated piano strikes.
+                    if absolute_onset - last_onsets.get(midi, -1e9) < 0.14:
+                        continue
+                    last_onsets[midi] = absolute_onset
+                    events.append(
+                        NoteEvent(
+                            midi=midi,
+                            start=max(0.0, onset - cutoff),
+                            end=max(0.0, float(end) - cutoff),
+                            velocity=max(
+                                1, min(127, round(float(amplitude) * 127))
+                            ),
+                            confidence=float(amplitude),
+                        )
                     )
-                    for start, end, pitch, amplitude, *_ in raw_notes
-                ]
+                first_window = False
+                stale_before = window_start - 1.0
+                last_onsets = {
+                    midi: onset
+                    for midi, onset in last_onsets.items()
+                    if onset >= stale_before
+                }
                 notes = filter_and_merge(
                     events, self.config.min_confidence, self.config.min_velocity
                 )
                 notes = suppress_weak_harmonics(notes)
-                notes = self._limit_repeated_attacks(notes)
                 if notes:
                     self.on_notes(notes)
                     self.on_status("Listening · Piano detected", False)
             except Exception as exc:
                 self.on_status(f"转录暂时失败 · 将继续监听（{exc}）", True)
-
-    def _limit_repeated_attacks(self, notes: list[NoteEvent]) -> list[NoteEvent]:
-        """Avoid resetting a key's fade for every adjacent analysis block."""
-        now = time.monotonic()
-        cooldown = max(0.75, self.config.chunk_seconds * 1.8)
-        emitted: list[NoteEvent] = []
-        for note in notes:
-            if now - self._last_emitted.get(note.midi, -1e9) >= cooldown:
-                emitted.append(note)
-                self._last_emitted[note.midi] = now
-        stale_before = now - max(4.0, self.config.decay_seconds * 2)
-        self._last_emitted = {
-            midi: timestamp
-            for midi, timestamp in self._last_emitted.items()
-            if timestamp >= stale_before
-        }
-        return emitted
 
     def _write_wav(self, audio: np.ndarray) -> Path:
         pcm = np.clip(audio, -1.0, 1.0)

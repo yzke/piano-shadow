@@ -1,6 +1,10 @@
 import ctypes
+import hashlib
 import platform
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
 
@@ -68,6 +72,49 @@ class WindowsOverlayTests(unittest.TestCase):
         window._activate_control("model")
         self.assertEqual(config.model, "basic-pitch")
         self.assertEqual(selected, ["piano-gpu", "basic-pitch"])
+        window.close()
+
+    def test_opacity_cycle_has_two_transparent_keyboard_modes(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._opacity = 1.0
+        window._activate_control("opacity")
+        self.assertEqual(window._key_opacity_mode, 1)
+        self.assertEqual(window._active_key_opacity(), 0.65)
+        window._activate_control("opacity")
+        self.assertEqual(window._key_opacity_mode, 2)
+        self.assertEqual(window._active_key_opacity(), 1.0)
+        window._activate_control("opacity")
+        self.assertEqual(window._key_opacity_mode, 0)
+        self.assertEqual(window._opacity, 0.25)
+        window.close()
+
+    def test_model_download_worker_installs_verified_file(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window.model_download_finished_received.disconnect(
+            window._finish_model_download
+        )
+        results = []
+        window.model_download_finished_received.connect(
+            lambda success, message: results.append((success, message))
+        )
+        payload = b"piano-shadow-test-model"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.pth"
+            target = root / "models" / "target.pth"
+            partial = target.with_suffix(".pth.part")
+            source.write_bytes(payload)
+            with (
+                patch("config.PIANO_MODEL_MIN_BYTES", 1),
+                patch(
+                    "config.PIANO_MODEL_SHA256",
+                    hashlib.sha256(payload).hexdigest(),
+                ),
+            ):
+                window._download_model_worker(target, partial, source.as_uri())
+            self.app.processEvents()
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(results, [(True, str(target))])
         window.close()
 
     def test_gpu_fallback_updates_ui_selection(self):

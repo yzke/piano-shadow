@@ -43,7 +43,8 @@ python main.py --chunk 0.5 --decay 1.4 --min-amp 0.008 --width 900 --height 190
 模型芯片未点亮表示 Basic Pitch，蓝色点亮表示 Piano GPU。未锁定时可直接
 拖动窗口，无需单独的移动按钮。透明度按钮提供
 25%、35%、45%、55%、65%、75%、85%、90%、95%、100% 共 10 档，
-到顶后回到 25%；右键滑杆支持 25%–100% 连续微调。窗口拖动优先使用桌面系统原生移动协议，
+之后增加“底键透明/弹奏键 65%”和“底键透明/弹奏键 100%”两档，再回到 25%；
+右键滑杆支持 25%–100% 连续微调。窗口拖动优先使用桌面系统原生移动协议，
 以改善 WSL/Wayland 下无边框窗口的拖动兼容性。
 被按下琴键及其荧光的有效透明度最低为 65%；背景和未按琴键仍完全跟随用户设置。
 动态音名与唱名使用同一音级颜色、亮度和 alpha，并与激活琴键共享最低 65% 的显示
@@ -118,9 +119,19 @@ QT_QPA_PLATFORM=xcb python main.py --demo-mode
 有效，且应用与播放器运行在同一用户会话。某些蓝牙免提设备或独占模式播放器不提供
 loopback；切回普通扬声器、关闭独占模式后重试。
 
-GitHub Release 提供独立的 `PianoShadow-Windows-x64.exe`，无需安装 Python。由于完整
-CUDA PyTorch 运行时超过 GitHub 单文件大小限制，独立 EXE 使用 Basic Pitch ONNX
-CPU；需要 Piano GPU 时使用下方 PowerShell 安装方式运行源码版。
+GitHub Release 提供正式安装包 `PianoShadow-Setup-vX.Y.Z-Windows-x64.exe`，无需安装
+Python。安装位置与可写数据分离：
+
+- 程序：`%LOCALAPPDATA%\Programs\PianoShadow`
+- GPU 模型：`%LOCALAPPDATA%\PianoShadow\models`
+- 日志：`%LOCALAPPDATA%\PianoShadow\logs`
+
+安装时可选择桌面快捷方式和登录后自动启动。升级或卸载程序默认保留已下载模型，
+重新安装不需要再次下载。旧版本位于
+`%USERPROFILE%\piano_transcription_inference_data` 的模型会在首次启动时自动迁移。
+
+由于 CUDA PyTorch 运行时本身超过 4GB，标准安装包内置 Basic Pitch ONNX CPU，
+不把 GPU 运行时和模型塞入安装包；需要 Piano GPU 时使用下方 PowerShell 源码版。
 
 推荐直接在 Windows PowerShell 中运行，这也能避开 WSLg 的置顶和双屏定位限制。
 在项目目录打开 PowerShell，首次执行：
@@ -142,7 +153,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 只安装界面依赖可使用 `.\setup-windows.ps1 -DemoOnly`；切换到真实识别时再执行一次
 不带 `-DemoOnly` 的安装命令。
 
-维护者可使用 `.\build-windows.ps1` 重建单文件 EXE，产物位于 `dist`。
+维护者可使用以下命令构建安装包，产物位于 `dist`：
+
+```powershell
+.\build-installer.ps1 -Version 0.2.0
+```
+
+构建机需要 Inno Setup 6；最终用户不需要安装 Python、PyQt6 或 Inno Setup。
 
 诊断 WASAPI loopback、录制 2.5 秒并自检 Basic Pitch：
 
@@ -168,6 +185,10 @@ GPU 权重不打包进 EXE。检测到权重缺失时，程序会提示并可直
 托盘菜单提供“下载 Piano GPU 模型”入口。
 状态栏仅显示模型名称，不显示具体 GPU 型号。按下时白键采用高饱和、高反差渐变，
 黑键采用更柔和的玻璃染色；未按下时仍保持真实黑白键外观。
+
+CPU 模式同样采用滚动时序：默认保留约 2 秒上下文、每 0.5 秒推进一次，只发布新增
+起音，并按绝对时间合并窗口重叠检测。相比旧版独立分块，首次响应稍慢，但快速音阶的
+顺序、跨块长音和重复按键更稳定。
 
 GPU 模式需要额外安装 CUDA 版 PyTorch：
 

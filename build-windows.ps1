@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$Version = "0.2.0"
+)
 
 $ErrorActionPreference = "Stop"
 $env:PYTHONUTF8 = "1"
@@ -9,6 +11,7 @@ $ProjectRoot = $PSScriptRoot
 $VenvPython = Join-Path $env:LOCALAPPDATA "PianoShadow\venv\Scripts\python.exe"
 $BuildRoot = Join-Path $env:LOCALAPPDATA "PianoShadow\package-build"
 $DistRoot = Join-Path $ProjectRoot "dist"
+$ExeBase = "PianoShadow-v$Version-Windows-x64"
 
 if (-not (Test-Path $VenvPython)) {
     throw "Windows environment is not installed. Run setup-windows.ps1 first."
@@ -34,7 +37,7 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --name "PianoShadow-v0.1.3-Windows-x64" `
+        --name $ExeBase `
         --icon (Join-Path $BuildRoot "assets\piano-shadow.ico") `
         --add-data "$(Join-Path $BuildRoot 'assets\piano-shadow-icon.png');assets" `
         --collect-all basic_pitch `
@@ -50,11 +53,11 @@ try {
         throw "PyInstaller build failed."
     }
     Copy-Item `
-        (Join-Path $BuildRoot "dist\PianoShadow-v0.1.3-Windows-x64.exe") `
-        (Join-Path $DistRoot "PianoShadow-v0.1.3-Windows-x64.exe") `
+        (Join-Path $BuildRoot "dist\$ExeBase.exe") `
+        (Join-Path $DistRoot "$ExeBase.exe") `
         -Force
 } finally {
     Pop-Location
 }
 
-Write-Host "Built: $(Join-Path $DistRoot 'PianoShadow-v0.1.3-Windows-x64.exe')" -ForegroundColor Green
+Write-Host "Built: $(Join-Path $DistRoot "$ExeBase.exe")" -ForegroundColor Green
