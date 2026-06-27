@@ -82,7 +82,7 @@ class OverlayWindow(QWidget):
         self._position_locked = False
         self._click_through = False
         self._show_status = True
-        self._opacity = 0.92
+        self._opacity = 0.85
         self._scale_percent = 100
         self._setup_window()
         self.notes_received.connect(self.add_notes)
@@ -228,8 +228,10 @@ class OverlayWindow(QWidget):
         path = QPainterPath()
         path.addRoundedRect(panel, 22, 22)
         gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0, QColor(16, 22, 34, 118))
-        gradient.setColorAt(1, QColor(5, 9, 17, 96))
+        # At 100% control opacity the glass is almost solid (~90% alpha).
+        # The painter-level opacity scales this consistently on WSL/Wayland.
+        gradient.setColorAt(0, QColor(16, 22, 34, 235))
+        gradient.setColorAt(1, QColor(5, 9, 17, 220))
         p.fillPath(path, gradient)
         p.setPen(QPen(QColor(255, 255, 255, 25), 1))
         p.drawPath(path)
@@ -419,8 +421,8 @@ class OverlayWindow(QWidget):
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
             # Resting keys sit roughly 10 percentage points above the glass.
-            base.setColorAt(0, QColor(230, 237, 246, 148))
-            base.setColorAt(1, QColor(142, 157, 177, 132))
+            base.setColorAt(0, QColor(230, 237, 246, 255))
+            base.setColorAt(1, QColor(142, 157, 177, 245))
             if glow:
                 color = self._note_color(midi)
                 light = color.lighter(135)
@@ -459,8 +461,8 @@ class OverlayWindow(QWidget):
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            base.setColorAt(0, QColor(42, 52, 68, 154))
-            base.setColorAt(1, QColor(5, 10, 19, 142))
+            base.setColorAt(0, QColor(42, 52, 68, 255))
+            base.setColorAt(1, QColor(5, 10, 19, 245))
             if glow:
                 color = self._note_color(midi)
                 light = color.lighter(135)
@@ -541,9 +543,9 @@ class OverlayWindow(QWidget):
         elif name == "larger":
             self._set_scale(self._scale_percent + 10)
         elif name == "opacity":
-            levels = (100, 85, 70, 55, 40)
+            levels = (40, 55, 70, 85, 100)
             current = round(self._opacity * 100)
-            next_level = next((level for level in levels if level < current), 100)
+            next_level = next((level for level in levels if level > current), 40)
             self._opacity = next_level / 100
         self.update()
 
