@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -100,7 +101,7 @@ class OverlayWindow(QWidget):
         self._model_download_progress: QProgressDialog | None = None
         self._show_status = True
         self._opacity = 0.85
-        self._key_opacity_mode = 0  # 0=normal, 1=active 65%, 2=active 100%
+        self._key_opacity_mode = 0  # 0=normal, 1=active 30%, 2=active 100%
         self._scale_percent = 100
         self._setup_window()
         self.notes_received.connect(self.add_notes)
@@ -572,7 +573,7 @@ class OverlayWindow(QWidget):
 
     def _active_key_opacity(self) -> float:
         if self._key_opacity_mode == 1:
-            return 0.65
+            return 0.30
         if self._key_opacity_mode == 2:
             return 1.0
         return max(0.65, self._opacity)
@@ -801,7 +802,7 @@ class OverlayWindow(QWidget):
                 self.set_status("整体透明度 25%", False)
             elif current >= 100:
                 self._key_opacity_mode = 1
-                self.set_status("键盘底键透明 · 弹奏键 65%", False)
+                self.set_status("键盘底键透明 · 弹奏键 30%", False)
             else:
                 next_level = next(level for level in levels if level > current)
                 self._opacity = next_level / 100
@@ -875,11 +876,23 @@ class OverlayWindow(QWidget):
             f"<code>{destination}</code>"
         )
         install = box.addButton("自动下载并安装", QMessageBox.ButtonRole.AcceptRole)
+        local = box.addButton("选择本地模型文件", QMessageBox.ButtonRole.ActionRole)
         browser = box.addButton("浏览器手动下载", QMessageBox.ButtonRole.ActionRole)
         box.addButton("继续使用 Basic Pitch", QMessageBox.ButtonRole.AcceptRole)
         box.exec()
         if box.clickedButton() is install:
             self._download_model(destination, url)
+        elif box.clickedButton() is local:
+            selected, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择 Piano GPU 模型",
+                str(Path.home()),
+                "PyTorch 模型 (*.pth);;所有文件 (*)",
+            )
+            if selected:
+                self._download_model(destination, Path(selected).as_uri())
+            else:
+                self._model_download_prompt_shown = False
         elif box.clickedButton() is browser:
             QDesktopServices.openUrl(QUrl(url))
             self._model_download_prompt_shown = False
@@ -995,7 +1008,7 @@ class OverlayWindow(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 5, 12, 7)
         label = QLabel("透明度", row)
-        special_labels = {1: "键透/65", 2: "键透/100"}
+        special_labels = {1: "键透/30", 2: "键透/100"}
         value = QLabel(
             special_labels.get(
                 self._key_opacity_mode, f"{round(self._opacity * 100)}%"

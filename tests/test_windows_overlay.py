@@ -79,7 +79,7 @@ class WindowsOverlayTests(unittest.TestCase):
         window._opacity = 1.0
         window._activate_control("opacity")
         self.assertEqual(window._key_opacity_mode, 1)
-        self.assertEqual(window._active_key_opacity(), 0.65)
+        self.assertEqual(window._active_key_opacity(), 0.30)
         window._activate_control("opacity")
         self.assertEqual(window._key_opacity_mode, 2)
         self.assertEqual(window._active_key_opacity(), 1.0)
