@@ -133,7 +133,8 @@ Python。安装位置与可写数据分离：
 `%USERPROFILE%\piano_transcription_inference_data` 的模型会在首次启动时自动迁移。
 
 由于 CUDA PyTorch 运行时本身超过 4GB，标准安装包内置 Basic Pitch ONNX CPU，
-不把 GPU 运行时和模型塞入安装包；需要 Piano GPU 时使用下方 PowerShell 源码版。
+不重复打包 GPU 运行时和模型。需要 Piano GPU 时执行下方 `setup-windows.ps1 -Gpu`
+安装本机 CUDA 环境；安装版会自动检测并通过本地桥接进程调用。
 
 推荐直接在 Windows PowerShell 中运行，这也能避开 WSLg 的置顶和双屏定位限制。
 在项目目录打开 PowerShell，首次执行：
@@ -158,7 +159,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 维护者可使用以下命令构建安装包，产物位于 `dist`：
 
 ```powershell
-.\build-installer.ps1 -Version 0.2.0
+.\build-installer.ps1 -Version <版本号>
 ```
 
 构建机需要 Inno Setup 6；最终用户不需要安装 Python、PyQt6 或 Inno Setup。
@@ -177,7 +178,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 右键窗口打开“识别模型”菜单，可在运行时切换：
 
 - `Basic Pitch · 快速通用`：CPU/ONNX，延迟低，适用于一般音频。
-- `Piano GPU · 钢琴高精度`：CUDA/PyTorch，使用 2 秒滚动上下文和 0.1 秒采集步进，
+- `Piano GPU · 推荐 · 钢琴高精度`：CUDA/PyTorch，使用 2 秒滚动上下文和 0.1 秒采集步进，
   面向纯钢琴的起音、结束时间、力度和踏板模型。
 
 默认优先启动 `Piano GPU`。如果缺少 PyTorch、CUDA、兼容显卡或模型权重加载失败，
@@ -219,9 +220,9 @@ GPU 模式需要额外安装 CUDA 版 PyTorch：
   音符。仍有误识别时可尝试 `--min-confidence 0.58 --min-velocity 40`。
 - **CPU 高**：增大 `--chunk`（如 3.5），关闭其他推理任务。UI 仅在动画存在时重绘，
   推理和采集均在后台线程。
-- **延迟**：模型只加载一次；当前 Windows 测试中复用后的推理约 31ms。默认 0.5 秒
-  chunk 的稳定端到端延迟约 0.53 秒，首次模型预热约需 2 秒。Basic Pitch 需要先积累
-  音频片段，因此无法达到几十毫秒级的实时演奏监听。
+- **延迟**：模型只加载一次。GPU 模式加载完成后按约 0.1 秒步进更新；CPU 模式首次
+  需要积累约 2 秒滚动上下文，之后默认约每 0.5 秒推进一次，实际延迟还取决于 CPU
+  推理耗时。该软件优先保证音符顺序和跨块稳定性，不定位为毫秒级演奏监听器。
 
 ## 项目结构
 
@@ -229,10 +230,14 @@ GPU 模式需要额外安装 CUDA 版 PyTorch：
 piano_shadow/
   main.py              启动、线程编排、demo
   audio_capture.py     monitor / WASAPI loopback 捕获
-  transcription.py    Basic Pitch 推理与过滤
+  transcription.py    Basic Pitch CPU 滚动时序推理
+  piano_transcription.py  Piano GPU 与安装版桥接管理
+  gpu_bridge.py        本机 CUDA Python 音频/音符桥接进程
   note_model.py        MIDI、音名、88 键映射
   ui_overlay.py        PyQt6 透明窗、绘制与动效
   config.py            配置与命令行
+  installer.iss        Windows 安装器定义
+  build-installer.ps1  Windows 安装包构建脚本
 ```
 
 运行核心映射测试：
