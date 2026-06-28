@@ -54,7 +54,13 @@ from PyQt6.QtWidgets import (
 )
 
 from config import AppConfig, PIANO_MODEL_MIN_BYTES, PIANO_MODEL_PATH
-from note_model import NoteEvent, PIANO_HIGH, PIANO_LOW, is_black_key
+from note_model import (
+    NoteEvent,
+    PIANO_HIGH,
+    PIANO_LOW,
+    is_black_key,
+    midi_to_name,
+)
 from performance import MAJOR_ROOTS, MINOR_ROOTS, PerformanceController
 
 # Stable pitch-class colors across every octave: C4 and C7, for example,
@@ -99,6 +105,7 @@ class OverlayWindow(QWidget):
     model_download_finished_received = pyqtSignal(bool, str)
     performance_mode_changed = pyqtSignal(bool)
     performance_note_received = pyqtSignal(int, int)
+    performance_answer_received = pyqtSignal(int)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -114,6 +121,10 @@ class OverlayWindow(QWidget):
         self._performance_mode = False
         self._performance_help = False
         self._performance: PerformanceController | None = None
+        self._ear_playback_generation = 0
+        self._ear_feedback_target: tuple[int, ...] = ()
+        self._ear_feedback_error: tuple[int, int, int] | None = None
+        self._ear_feedback_correct = False
         self._click_through = False
         self._model_download_prompt_shown = False
         self._gpu_requirements_confirmed = False
@@ -139,6 +150,7 @@ class OverlayWindow(QWidget):
             self._finish_model_download
         )
         self.performance_note_received.connect(self._show_performance_note)
+        self.performance_answer_received.connect(self._handle_ear_answer)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -266,6 +278,7 @@ class OverlayWindow(QWidget):
             self._draw_settings(painter)
         if self._performance_mode:
             self._draw_performance_status(painter)
+            self._draw_ear_feedback(painter)
         self._draw_pitch_legend(painter)
         self._draw_controls(painter)
         white, black = self._keyboard_geometry()
@@ -350,27 +363,44 @@ class OverlayWindow(QWidget):
     def _control_rects(self) -> dict[str, QRectF]:
         size = max(21.0, min(27.0, self.height() * 0.17))
         gap = 5.0
-        names = (
-            ("lock",)
-            if self._keyboard_only
-            else (
-                "performance",
-                "minimal",
-                "model",
-                "lock",
-                "top",
-                "smaller",
-                "larger",
-                "keyboard_opacity",
-                "active_opacity",
-                *(("input_mode", "performance_help") if self._performance_mode else ()),
-            )
+        if self._keyboard_only:
+            return {"lock": QRectF(self.width() - 20.0 - size, 16.0, size, size)}
+        primary = (
+            "performance",
+            "minimal",
+            "model",
+            "lock",
+            "top",
+            "smaller",
+            "larger",
+            "keyboard_opacity",
+            "active_opacity",
         )
-        start = self.width() - 20.0 - len(names) * size - (len(names) - 1) * gap
-        return {
+        start = self.width() - 20.0 - len(primary) * size - (len(primary) - 1) * gap
+        controls = {
             name: QRectF(start + index * (size + gap), 16.0, size, size)
-            for index, name in enumerate(names)
+            for index, name in enumerate(primary)
         }
+        if self._performance_mode:
+            secondary = ("input_mode", "performance_help", "ear_training")
+            secondary_start = (
+                self.width()
+                - 20.0
+                - len(secondary) * size
+                - (len(secondary) - 1) * gap
+            )
+            controls.update(
+                {
+                    name: QRectF(
+                        secondary_start + index * (size + gap),
+                        16.0 + size + gap,
+                        size,
+                        size,
+                    )
+                    for index, name in enumerate(secondary)
+                }
+            )
+        return controls
 
     def _draw_performance_status(self, p: QPainter) -> None:
         if self._performance is None:
@@ -408,9 +438,83 @@ class OverlayWindow(QWidget):
             p.drawText(
                 help_rect.adjusted(10, 4, -10, -4),
                 Qt.AlignmentFlag.AlignCenter,
-                "F1–F7 / 1–7 / Q–U / A–J / Z–M：C2–B6\n"
-                "← 小调  → 大调  ↑↓ 八度\n"
+                "每排前 7 键为一组音阶，右侧按键顺延至高八度\n"
+                "← 上一个调  → 下一个调  ↑↓ 八度\n"
                 "Shift 升音  Ctrl 降音  Space 延音  Enter 休止",
+            )
+        p.restore()
+
+    def _draw_ear_feedback(self, p: QPainter) -> None:
+        if not self._ear_feedback_target:
+            return
+        target = self._ear_feedback_target
+        error = self._ear_feedback_error
+        width = min(self.width() * 0.58, 58.0 + len(target) * 58.0)
+        panel = QRectF((self.width() - width) / 2, 48, width, 55)
+        p.save()
+        p.setOpacity(self._active_opacity)
+        p.setPen(QPen(QColor(255, 255, 255, 28), 0.8))
+        p.setBrush(QColor(8, 14, 24, 218))
+        p.drawRoundedRect(panel, 12, 12)
+
+        title_font = QFont(
+            "Inter, Noto Sans CJK SC, sans-serif",
+            max(7, round(self.height() * 0.043)),
+        )
+        title_font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(title_font)
+        if error is None:
+            p.setPen(QColor(157, 230, 190, 225))
+            title = "正确 · 完整答案"
+        else:
+            index, expected, actual = error
+            p.setPen(QColor(255, 130, 140, 235))
+            title = (
+                f"第 {index + 1} 音错误："
+                f"{midi_to_name(actual)} → {midi_to_name(expected)}"
+            )
+        p.drawText(
+            QRectF(panel.left() + 10, panel.top() + 3, panel.width() - 20, 17),
+            Qt.AlignmentFlag.AlignCenter,
+            title,
+        )
+
+        item_width = min(52.0, (panel.width() - 20) / len(target))
+        row_width = item_width * len(target)
+        start_x = panel.center().x() - row_width / 2
+        note_font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.047)))
+        note_font.setWeight(QFont.Weight.DemiBold)
+        solfege_font = QFont("Inter, Arial, sans-serif", max(6, round(self.height() * 0.037)))
+        for item_index, midi in enumerate(target):
+            item = QRectF(start_x + item_index * item_width, panel.top() + 20, item_width, 31)
+            is_error = error is not None and item_index == error[0]
+            display_midi = error[2] if is_error else midi
+            color = (
+                QColor(255, 92, 108, 245)
+                if is_error
+                else self._note_color(midi, 235)
+            )
+            if is_error:
+                p.setPen(QPen(QColor(255, 92, 108, 135), 0.9))
+                p.setBrush(QColor(118, 24, 37, 80))
+                p.drawRoundedRect(item.adjusted(3, 0, -3, 0), 6, 6)
+            p.setPen(color)
+            p.setFont(note_font)
+            p.drawText(
+                QRectF(item.left(), item.top(), item.width(), 16),
+                Qt.AlignmentFlag.AlignCenter,
+                midi_to_name(display_midi),
+            )
+            p.setFont(solfege_font)
+            if is_error:
+                p.setPen(self._note_color(midi, 235))
+                solfege = f"→ {midi_to_name(midi)} {SOLFEGE_NAMES[midi % 12]}"
+            else:
+                solfege = SOLFEGE_NAMES[display_midi % 12]
+            p.drawText(
+                QRectF(item.left(), item.top() + 15, item.width(), 14),
+                Qt.AlignmentFlag.AlignCenter,
+                solfege,
             )
         p.restore()
 
@@ -423,6 +527,11 @@ class OverlayWindow(QWidget):
                 or (name == "top" and self._always_on_top)
                 or (name == "model" and self.config.model == "piano-gpu")
                 or (name == "performance_help" and self._performance_help)
+                or (
+                    name == "ear_training"
+                    and self._performance is not None
+                    and self._performance.ear_training.note_count > 0
+                )
                 or (
                     name == "input_mode"
                     and self._performance is not None
@@ -471,6 +580,23 @@ class OverlayWindow(QWidget):
             font.setWeight(QFont.Weight.Bold)
             p.setFont(font)
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "?")
+        elif name == "ear_training":
+            level = (
+                self._performance.ear_training.note_count
+                if self._performance is not None
+                else 0
+            )
+            p.drawEllipse(QRectF(cx - 2.2 * unit, cy - 1.2 * unit, 1.5 * unit, 1.5 * unit))
+            p.drawLine(QLineF(cx - 0.7 * unit, cy - 0.5 * unit, cx - 0.7 * unit, cy - 2.5 * unit))
+            p.drawLine(QLineF(cx - 0.7 * unit, cy - 2.5 * unit, cx + 1.0 * unit, cy - 2.0 * unit))
+            font = QFont("Inter, Arial, sans-serif", max(7, round(unit * 2.0)))
+            font.setWeight(QFont.Weight.Bold)
+            p.setFont(font)
+            p.drawText(
+                QRectF(cx - 0.1 * unit, cy - 0.1 * unit, 3.0 * unit, 2.7 * unit),
+                Qt.AlignmentFlag.AlignCenter,
+                str(level) if level else "×",
+            )
         elif name == "input_mode":
             if self._performance and self._performance.input_mode == "midi":
                 p.drawEllipse(
@@ -851,7 +977,7 @@ class OverlayWindow(QWidget):
         key = event.key()
         function_keys = {
             int(Qt.Key.Key_F1) + index: f"F{index + 1}"
-            for index in range(7)
+            for index in range(12)
         }
         if key in function_keys:
             return function_keys[key]
@@ -859,8 +985,21 @@ class OverlayWindow(QWidget):
         # Map physical Qt key codes so Shift/Ctrl accidentals behave identically.
         if ord("0") <= key <= ord("9") or ord("A") <= key <= ord("Z"):
             token = chr(key)
-            if token in "1234567QWERTYUASDFGHJZXCVBNM":
+            if token in "1234567890QWERTYUIOPASDFGHJKLZXCVBNM":
                 return token
+        punctuation_keys = {
+            Qt.Key.Key_Minus: "-",
+            Qt.Key.Key_Equal: "=",
+            Qt.Key.Key_BracketLeft: "[",
+            Qt.Key.Key_BracketRight: "]",
+            Qt.Key.Key_Semicolon: ";",
+            Qt.Key.Key_Apostrophe: "'",
+            Qt.Key.Key_Comma: ",",
+            Qt.Key.Key_Period: ".",
+            Qt.Key.Key_Slash: "/",
+        }
+        if key in punctuation_keys:
+            return punctuation_keys[key]
         return None
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -884,9 +1023,13 @@ class OverlayWindow(QWidget):
         elif key == Qt.Key.Key_Up:
             controller.shift_octave(-1)
         elif key == Qt.Key.Key_Right:
-            controller.next_major()
+            controller.shift_scale(1)
+            if controller.ear_training.note_count:
+                self._start_ear_question()
         elif key == Qt.Key.Key_Left:
-            controller.next_minor()
+            controller.shift_scale(-1)
+            if controller.ear_training.note_count:
+                self._start_ear_question()
         else:
             token = self._performance_key_token(event)
             if token:
@@ -930,16 +1073,148 @@ class OverlayWindow(QWidget):
         )
         self._display_notes([event])
 
+    def _cycle_ear_training(self) -> None:
+        if self._performance is None:
+            return
+        self._ear_playback_generation += 1
+        self._performance.all_notes_off()
+        self._clear_ear_feedback()
+        level = self._performance.ear_training.cycle_level()
+        self._performance_help = False
+        if level == 0:
+            self.set_status("听音练习已关闭", False)
+        else:
+            self.set_status(f"听音练习 · {level} 音", False)
+            generation = self._ear_playback_generation
+            QTimer.singleShot(
+                250,
+                lambda token=generation: self._start_ear_question_if_current(token),
+            )
+        self.update()
+
+    def _start_ear_question_if_current(self, generation: int) -> None:
+        if generation == self._ear_playback_generation:
+            self._start_ear_question()
+
+    def _start_ear_question(self) -> None:
+        if self._performance is None:
+            return
+        session = self._performance.ear_training
+        if session.note_count == 0:
+            return
+        target = session.new_question(
+            self._performance.mode, self._performance.scale_index
+        )
+        self._play_ear_target(target)
+
+    def _play_ear_target(self, target: tuple[int, ...] | None = None) -> None:
+        if self._performance is None:
+            return
+        session = self._performance.ear_training
+        target = target or session.replay()
+        if not target or session.note_count == 0:
+            return
+        self._ear_playback_generation += 1
+        self._clear_ear_feedback()
+        generation = self._ear_playback_generation
+        self._performance.all_notes_off()
+        self.set_status(f"听音练习 · {session.note_count} 音 · 请听", False)
+        interval_ms = 360
+        duration_ms = 230
+        for index, midi in enumerate(target):
+            QTimer.singleShot(
+                index * interval_ms,
+                lambda note=midi, token=generation: self._play_ear_note(token, note),
+            )
+            QTimer.singleShot(
+                index * interval_ms + duration_ms,
+                lambda note=midi, token=generation: self._stop_ear_note(token, note),
+            )
+        QTimer.singleShot(
+            len(target) * interval_ms + 80,
+            lambda token=generation: self._begin_ear_answer(token),
+        )
+
+    def _play_ear_note(self, generation: int, midi: int) -> None:
+        if generation != self._ear_playback_generation or self._performance is None:
+            return
+        self._performance.synth.note_on(midi, 92)
+        self.performance_note_received.emit(midi, 92)
+
+    def _stop_ear_note(self, generation: int, midi: int) -> None:
+        if generation == self._ear_playback_generation and self._performance is not None:
+            self._performance.synth.note_off(midi)
+
+    def _begin_ear_answer(self, generation: int) -> None:
+        if generation != self._ear_playback_generation or self._performance is None:
+            return
+        session = self._performance.ear_training
+        if session.note_count == 0:
+            return
+        session.accepting = True
+        self.set_status(
+            f"听音练习 · {session.note_count} 音 · 请按顺序复现",
+            False,
+        )
+
+    @pyqtSlot(int)
+    def _handle_ear_answer(self, midi: int) -> None:
+        if self._performance is None:
+            return
+        session = self._performance.ear_training
+        result = session.submit(midi)
+        if result == "continue":
+            self.set_status(
+                f"听音练习 · 已答对 {len(session.answer)}/{session.note_count}",
+                False,
+            )
+        elif result == "correct":
+            self._ear_feedback_target = session.target
+            self._ear_feedback_error = None
+            self._ear_feedback_correct = True
+            self.set_status("听音练习 · 正确，下一组", False)
+            self.update()
+            generation = self._ear_playback_generation
+            QTimer.singleShot(
+                1400,
+                lambda token=generation: self._start_ear_question_if_current(token),
+            )
+        elif result == "wrong":
+            self._ear_feedback_target = session.target
+            self._ear_feedback_error = session.last_error
+            self._ear_feedback_correct = False
+            self.set_status("听音练习 · 不对，再听一次", True)
+            self.update()
+            generation = self._ear_playback_generation
+            QTimer.singleShot(
+                1800,
+                lambda token=generation: self._replay_ear_question_if_current(token),
+            )
+
+    def _replay_ear_question_if_current(self, generation: int) -> None:
+        if generation != self._ear_playback_generation or self._performance is None:
+            return
+        self._play_ear_target(self._performance.ear_training.replay())
+
+    def _clear_ear_feedback(self) -> None:
+        self._ear_feedback_target = ()
+        self._ear_feedback_error = None
+        self._ear_feedback_correct = False
+        self.update()
+
     def _toggle_performance_mode(self, enabled: bool) -> None:
         if enabled == self._performance_mode:
             return
         self._performance_mode = enabled
         self._performance_help = False
+        self._ear_playback_generation += 1
+        self._clear_ear_feedback()
         self.visual_notes.clear()
         if enabled:
             self._toggle_position_lock(False)
             self._performance = PerformanceController(
-                self.performance_note_received.emit
+                self.performance_note_received.emit,
+                self.performance_answer_received.emit,
             )
             self._performance.reset()
             self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1000,6 +1275,8 @@ class OverlayWindow(QWidget):
             self._toggle_performance_mode(not self._performance_mode)
         elif name == "performance_help":
             self._performance_help = not self._performance_help
+        elif name == "ear_training":
+            self._cycle_ear_training()
         elif name == "input_mode" and self._performance is not None:
             self._performance.toggle_input_mode()
         elif name == "minimal":
@@ -1230,7 +1507,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.2"}
+                    url, headers={"User-Agent": "PianoShadow/0.4"}
                 )
                 with urllib.request.urlopen(request, timeout=45) as response:
                     total = int(response.headers.get("Content-Length", "0"))

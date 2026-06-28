@@ -107,13 +107,52 @@ class WindowsOverlayTests(unittest.TestCase):
                 "active_opacity",
                 "input_mode",
                 "performance_help",
+                "ear_training",
             ),
+        )
+        self.assertGreater(
+            window._control_rects()["ear_training"].top(),
+            window._control_rects()["performance"].top(),
         )
         self.assertEqual(window._performance.input_mode, "keyboard")
         window._activate_control("performance_help")
         self.assertTrue(window._performance_help)
         window._activate_control("input_mode")
         self.assertEqual(window._performance.input_mode, "midi")
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_ear_training_control_cycles_levels(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        for expected in (1, 3, 5, 7, 0):
+            window._activate_control("ear_training")
+            self.assertEqual(
+                window._performance.ear_training.note_count,
+                expected,
+            )
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_ear_training_feedback_records_correct_and_wrong_notes(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        session = window._performance.ear_training
+        session.note_count = 3
+        session.target = (60, 64, 67)
+        session.accepting = True
+        window._handle_ear_answer(61)
+        self.assertEqual(window._ear_feedback_target, (60, 64, 67))
+        self.assertEqual(window._ear_feedback_error, (0, 60, 61))
+
+        window._clear_ear_feedback()
+        session.target = (60,)
+        session.note_count = 1
+        session.accepting = True
+        window._handle_ear_answer(60)
+        self.assertEqual(window._ear_feedback_target, (60,))
+        self.assertIsNone(window._ear_feedback_error)
+        self.assertTrue(window._ear_feedback_correct)
         window._toggle_performance_mode(False)
         window.close()
 
@@ -134,6 +173,30 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(played, [59])  # Q is C4; Ctrl lowers it to B3.
         window._toggle_performance_mode(False)
         window.close()
+
+    def test_extended_performance_keys_use_physical_key_codes(self):
+        cases = (
+            (Qt.Key.Key_F12, "F12"),
+            (Qt.Key.Key_8, "8"),
+            (Qt.Key.Key_Equal, "="),
+            (Qt.Key.Key_I, "I"),
+            (Qt.Key.Key_BracketRight, "]"),
+            (Qt.Key.Key_K, "K"),
+            (Qt.Key.Key_Apostrophe, "'"),
+            (Qt.Key.Key_Comma, ","),
+            (Qt.Key.Key_Slash, "/"),
+        )
+        for qt_key, expected in cases:
+            with self.subTest(expected):
+                event = QKeyEvent(
+                    QEvent.Type.KeyPress,
+                    qt_key,
+                    Qt.KeyboardModifier.NoModifier,
+                )
+                self.assertEqual(
+                    OverlayWindow._performance_key_token(event),
+                    expected,
+                )
 
     def test_settings_restore_independent_opacities(self):
         with tempfile.TemporaryDirectory() as directory:
