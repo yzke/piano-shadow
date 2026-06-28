@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import QApplication
 
 from config import AppConfig
@@ -75,19 +76,43 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(selected, ["piano-gpu", "basic-pitch"])
         window.close()
 
-    def test_opacity_cycle_has_two_transparent_keyboard_modes(self):
+    def test_keyboard_and_active_opacity_are_independent(self):
         window = OverlayWindow(AppConfig(demo_mode=True))
         window._opacity = 1.0
-        window._activate_control("opacity")
-        self.assertEqual(window._key_opacity_mode, 1)
-        self.assertEqual(window._active_key_opacity(), 0.30)
-        window._activate_control("opacity")
-        self.assertEqual(window._key_opacity_mode, 2)
+        window._active_opacity = 0.90
+        window._activate_control("keyboard_opacity")
+        self.assertEqual(window._opacity, 0.0)
+        self.assertEqual(window._active_opacity, 0.90)
+        window._activate_control("active_opacity")
         self.assertEqual(window._active_key_opacity(), 1.0)
-        window._activate_control("opacity")
-        self.assertEqual(window._key_opacity_mode, 0)
-        self.assertEqual(window._opacity, 0.25)
+        window._activate_control("active_opacity")
+        self.assertEqual(window._active_key_opacity(), 0.30)
         window.close()
+
+    def test_settings_restore_independent_opacities(self):
+        with tempfile.TemporaryDirectory() as directory:
+            QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+            QSettings.setPath(
+                QSettings.Format.IniFormat,
+                QSettings.Scope.UserScope,
+                directory,
+            )
+            QSettings("Piano Shadow", "Piano Shadow").clear()
+            first = OverlayWindow(AppConfig(demo_mode=True))
+            first._opacity = 0.20
+            first._active_opacity = 0.70
+            first._scale_percent = 120
+            first._show_status = False
+            first.save_settings()
+            first.close()
+
+            restored = OverlayWindow(AppConfig(demo_mode=True))
+            restored.restore_settings()
+            self.assertEqual(restored._opacity, 0.20)
+            self.assertEqual(restored._active_opacity, 0.70)
+            self.assertEqual(restored._scale_percent, 120)
+            self.assertFalse(restored._show_status)
+            restored.close()
 
     def test_model_download_worker_installs_verified_file(self):
         window = OverlayWindow(AppConfig(demo_mode=True))

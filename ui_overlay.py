@@ -13,7 +13,18 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
-from PyQt6.QtCore import QLineF, QPoint, QRectF, Qt, QTimer, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QLineF,
+    QPoint,
+    QRect,
+    QRectF,
+    QSettings,
+    Qt,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt6.QtGui import (
     QAction,
     QActionGroup,
@@ -104,7 +115,7 @@ class OverlayWindow(QWidget):
         self._model_download_progress: QProgressDialog | None = None
         self._show_status = True
         self._opacity = 0.85
-        self._key_opacity_mode = 0  # 0=normal, 1=active 30%, 2=active 100%
+        self._active_opacity = 0.85
         self._scale_percent = 100
         self._setup_window()
         self.notes_received.connect(self.add_notes)
@@ -244,9 +255,6 @@ class OverlayWindow(QWidget):
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # WSLg/Wayland may ignore window-manager opacity for translucent
-        # frameless windows. Paint-level opacity is platform-independent.
-        painter.setOpacity(self._opacity)
         now = time.monotonic()
         if not self._keyboard_only:
             self._draw_glass(painter)
@@ -259,6 +267,8 @@ class OverlayWindow(QWidget):
         self._draw_keyboard(painter, white, black, now)
 
     def _draw_glass(self, p: QPainter) -> None:
+        p.save()
+        p.setOpacity(self._opacity)
         panel = QRectF(7, 7, self.width() - 14, self.height() - 14)
         path = QPainterPath()
         path.addRoundedRect(panel, 22, 22)
@@ -270,6 +280,7 @@ class OverlayWindow(QWidget):
         p.fillPath(path, gradient)
         p.setPen(QPen(QColor(255, 255, 255, 25), 1))
         p.drawPath(path)
+        p.restore()
 
     def _draw_status(self, p: QPainter) -> None:
         font = QFont("Inter, Noto Sans CJK SC, sans-serif", 9)
@@ -317,7 +328,7 @@ class OverlayWindow(QWidget):
             return
 
         p.save()
-        p.setOpacity(max(0.65, self._opacity))
+        p.setOpacity(self._active_opacity)
         font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.050)))
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
@@ -336,7 +347,16 @@ class OverlayWindow(QWidget):
         names = (
             ("lock",)
             if self._keyboard_only
-            else ("minimal", "model", "lock", "top", "smaller", "larger", "opacity")
+            else (
+                "minimal",
+                "model",
+                "lock",
+                "top",
+                "smaller",
+                "larger",
+                "keyboard_opacity",
+                "active_opacity",
+            )
         )
         start = self.width() - 20.0 - len(names) * size - (len(names) - 1) * gap
         return {
@@ -348,8 +368,6 @@ class OverlayWindow(QWidget):
         p.save()
         for name, rect in self._control_rects().items():
             p.save()
-            if name == "lock":
-                p.setOpacity(max(0.65, self._opacity))
             active = (
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
@@ -407,12 +425,18 @@ class OverlayWindow(QWidget):
             p.drawLine(QLineF(cx - 2.0 * unit, cy, cx + 2.0 * unit, cy))
             if name == "larger":
                 p.drawLine(QLineF(cx, cy - 2.0 * unit, cx, cy + 2.0 * unit))
-        elif name == "opacity":
+        elif name == "keyboard_opacity":
             circle = QRectF(cx - 2.25 * unit, cy - 2.25 * unit, 4.5 * unit, 4.5 * unit)
             p.drawEllipse(circle)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(205, 233, 249, 210))
             p.drawPie(circle, 90 * 16, 180 * 16)
+        elif name == "active_opacity":
+            circle = QRectF(cx - 2.2 * unit, cy - 2.2 * unit, 4.4 * unit, 4.4 * unit)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for index, pitch in enumerate((0, 4, 7)):
+                p.setPen(QPen(self._note_color(pitch + 60, 235), max(1.2, unit * 0.7)))
+                p.drawArc(circle, (90 + index * 120) * 16, 105 * 16)
 
     def _draw_note_labels(
         self,
@@ -475,6 +499,8 @@ class OverlayWindow(QWidget):
             solfege_y = y + solfege_metrics.height() * 0.92
 
             guide = self._note_color(note.midi, round(70 * alpha))
+            p.save()
+            p.setOpacity(self._active_opacity)
             p.setPen(QPen(guide, 0.8))
             p.drawLine(
                 QLineF(
@@ -484,9 +510,10 @@ class OverlayWindow(QWidget):
                     keyboard_top - 3,
                 )
             )
+            p.restore()
             text_alpha = round(185 + 70 * alpha)
             p.save()
-            p.setOpacity(max(0.65, self._opacity))
+            p.setOpacity(self._active_opacity)
             p.setFont(font)
             p.setPen(self._note_color(note.midi, text_alpha))
             p.drawText(QPoint(round(center_x - note_width / 2), round(y)), note.name)
@@ -513,10 +540,12 @@ class OverlayWindow(QWidget):
         resting_white = QLinearGradient(white_bed.topLeft(), white_bed.bottomLeft())
         resting_white.setColorAt(0, QColor(230, 237, 246, 255))
         resting_white.setColorAt(1, QColor(154, 170, 190, 250))
-        if self._key_opacity_mode == 0:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(resting_white)
-            p.drawRect(white_bed)
+        p.save()
+        p.setOpacity(self._opacity)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(resting_white)
+        p.drawRect(white_bed)
+        p.restore()
         for midi, rect in white.items():
             glow = active.get(midi, 0)
             if not glow:
@@ -541,8 +570,10 @@ class OverlayWindow(QWidget):
             p.setOpacity(self._active_key_opacity())
             p.drawRect(rect)
             p.restore()
-        if self._key_opacity_mode == 0:
-            self._draw_white_key_separators(p, white, black)
+        p.save()
+        p.setOpacity(self._opacity)
+        self._draw_white_key_separators(p, white, black)
+        p.restore()
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
@@ -570,19 +601,18 @@ class OverlayWindow(QWidget):
                 p.setOpacity(self._active_key_opacity())
                 p.drawRoundedRect(rect, 2, 2)
                 p.restore()
-            elif self._key_opacity_mode == 0:
+            else:
+                p.save()
+                p.setOpacity(self._opacity)
                 p.drawRoundedRect(rect, 2, 2)
+                p.restore()
         # Draw center glows only after both key layers exist. Previously black
         # keys covered part of every neighboring white-key glow.
         self._draw_active_center_glows(p, white, black, active)
         self._draw_active_key_edges(p, white, black, active)
 
     def _active_key_opacity(self) -> float:
-        if self._key_opacity_mode == 1:
-            return 0.30
-        if self._key_opacity_mode == 2:
-            return 1.0
-        return max(0.65, self._opacity)
+        return self._active_opacity
 
     def _draw_active_center_glows(
         self,
@@ -796,22 +826,22 @@ class OverlayWindow(QWidget):
             self._set_scale(self._scale_percent - 10)
         elif name == "larger":
             self._set_scale(self._scale_percent + 10)
-        elif name == "opacity":
-            levels = (25, 35, 45, 55, 65, 75, 85, 90, 95, 100)
+        elif name == "keyboard_opacity":
+            levels = (0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
             current = round(self._opacity * 100)
-            if self._key_opacity_mode == 1:
-                self._key_opacity_mode = 2
-                self.set_status("键盘底键透明 · 弹奏键 100%", False)
-            elif self._key_opacity_mode == 2:
-                self._key_opacity_mode = 0
-                self._opacity = 0.25
-                self.set_status("整体透明度 25%", False)
-            elif current >= 100:
-                self._key_opacity_mode = 1
-                self.set_status("键盘底键透明 · 弹奏键 30%", False)
-            else:
-                next_level = next(level for level in levels if level > current)
-                self._opacity = next_level / 100
+            next_level = next(
+                (level for level in levels if level > current), 0
+            )
+            self._opacity = next_level / 100
+            self.set_status(f"键盘透明度 {next_level}%", False)
+        elif name == "active_opacity":
+            levels = (30, 40, 50, 60, 70, 80, 90, 100)
+            current = round(self._active_opacity * 100)
+            next_level = next(
+                (level for level in levels if level > current), 30
+            )
+            self._active_opacity = next_level / 100
+            self.set_status(f"彩色高亮透明度 {next_level}%", False)
         self.update()
 
     def _show_menu(self, position: QPoint) -> None:
@@ -849,7 +879,8 @@ class OverlayWindow(QWidget):
             model_group.addAction(action)
             model_menu.addAction(action)
         menu.addSeparator()
-        menu.addAction(self._opacity_action(menu))
+        menu.addAction(self._keyboard_opacity_action(menu))
+        menu.addAction(self._active_opacity_action(menu))
         menu.addAction(self._size_action(menu))
         menu.addAction(status)
         menu.addSeparator()
@@ -1080,29 +1111,48 @@ class OverlayWindow(QWidget):
         if self.config.model != "piano-gpu":
             self._select_model("piano-gpu")
 
-    def _opacity_action(self, menu: QMenu) -> QWidgetAction:
+    def _keyboard_opacity_action(self, menu: QMenu) -> QWidgetAction:
         action = QWidgetAction(menu)
         row = QWidget(menu)
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 5, 12, 7)
-        label = QLabel("透明度", row)
-        special_labels = {1: "键透/30", 2: "键透/100"}
-        value = QLabel(
-            special_labels.get(
-                self._key_opacity_mode, f"{round(self._opacity * 100)}%"
-            ),
-            row,
-        )
+        label = QLabel("键盘透明度", row)
+        value = QLabel(f"{round(self._opacity * 100)}%", row)
         value.setMinimumWidth(34)
         slider = QSlider(Qt.Orientation.Horizontal, row)
-        slider.setRange(25, 100)
+        slider.setRange(0, 100)
         slider.setValue(round(self._opacity * 100))
         slider.setMinimumWidth(145)
-        slider.setToolTip("调节整个悬浮窗的可见度")
+        slider.setToolTip("调节毛玻璃、黑白底键和普通界面的可见度")
 
         def change(percent: int) -> None:
-            self._key_opacity_mode = 0
             self._opacity = percent / 100
+            value.setText(f"{percent}%")
+            self.update()
+
+        slider.valueChanged.connect(change)
+        layout.addWidget(label)
+        layout.addWidget(slider, 1)
+        layout.addWidget(value)
+        action.setDefaultWidget(row)
+        return action
+
+    def _active_opacity_action(self, menu: QMenu) -> QWidgetAction:
+        action = QWidgetAction(menu)
+        row = QWidget(menu)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 5, 12, 7)
+        label = QLabel("彩色高亮", row)
+        value = QLabel(f"{round(self._active_opacity * 100)}%", row)
+        value.setMinimumWidth(34)
+        slider = QSlider(Qt.Orientation.Horizontal, row)
+        slider.setRange(30, 100)
+        slider.setValue(round(self._active_opacity * 100))
+        slider.setMinimumWidth(145)
+        slider.setToolTip("调节彩色琴键、光晕、音名与唱名的可见度")
+
+        def change(percent: int) -> None:
+            self._active_opacity = percent / 100
             value.setText(f"{percent}%")
             self.update()
 
@@ -1150,6 +1200,104 @@ class OverlayWindow(QWidget):
         height = round(self.config.height * percent / 100)
         self.setFixedSize(width, height)
         self.move(center.x() - width // 2, center.y() - height // 2)
+        self.update()
+
+    def restore_settings(self) -> None:
+        settings = QSettings("Piano Shadow", "Piano Shadow")
+        self._opacity = max(
+            0.0, min(1.0, float(settings.value("keyboard_opacity", 0.85)))
+        )
+        self._active_opacity = max(
+            0.30, min(1.0, float(settings.value("active_opacity", 0.85)))
+        )
+        self._show_status = settings.value("show_status", True, type=bool)
+        self._scale_percent = max(
+            60, min(160, int(settings.value("scale_percent", 100)))
+        )
+        self.setFixedSize(
+            round(self.config.width * self._scale_percent / 100),
+            round(self.config.height * self._scale_percent / 100),
+        )
+        saved_position = settings.value("position", None)
+        if isinstance(saved_position, QPoint):
+            candidate = QRect(
+                saved_position.x(),
+                saved_position.y(),
+                self.width(),
+                self.height(),
+            )
+            if any(
+                screen.availableGeometry().intersects(candidate)
+                for screen in QApplication.screens()
+            ):
+                self.move(saved_position)
+        saved_model = str(settings.value("model", self.config.model))
+        if saved_model in {"basic-pitch", "piano-gpu"}:
+            self.config.model = saved_model
+        self._always_on_top = settings.value(
+            "always_on_top", True, type=bool
+        )
+        self._keyboard_only = settings.value(
+            "keyboard_only", False, type=bool
+        )
+        self._position_locked = settings.value(
+            "position_locked", self._keyboard_only, type=bool
+        )
+        self._toggle_click_through(self._position_locked)
+        self.setCursor(
+            Qt.CursorShape.ArrowCursor
+            if self._position_locked
+            else Qt.CursorShape.OpenHandCursor
+        )
+        self._toggle_topmost(self._always_on_top)
+        self.update()
+
+    def save_settings(self) -> None:
+        settings = QSettings("Piano Shadow", "Piano Shadow")
+        settings.setValue("position", self.pos())
+        settings.setValue("scale_percent", self._scale_percent)
+        settings.setValue("keyboard_opacity", self._opacity)
+        settings.setValue("active_opacity", self._active_opacity)
+        settings.setValue("model", self.config.model)
+        settings.setValue("always_on_top", self._always_on_top)
+        settings.setValue("position_locked", self._position_locked)
+        settings.setValue("keyboard_only", self._keyboard_only)
+        settings.setValue("show_status", self._show_status)
+        settings.sync()
+
+    def reset_settings(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "恢复默认设置",
+            "确定恢复窗口位置、大小、透明度和功能状态的默认值吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        old_model = self.config.model
+        self._opacity = 0.85
+        self._active_opacity = 0.85
+        self._show_status = True
+        self._scale_percent = 100
+        self._keyboard_only = False
+        self._position_locked = False
+        self._toggle_click_through(False)
+        self._toggle_topmost(True)
+        self.setFixedSize(self.config.width, self.config.height)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(
+                area.center().x() - self.width() // 2,
+                area.center().y() - self.height() // 2,
+            )
+        self.config.model = "piano-gpu"
+        if old_model != self.config.model:
+            self.model_selected.emit(self.config.model)
+        QSettings("Piano Shadow", "Piano Shadow").clear()
+        self.save_settings()
+        self.set_status("已恢复默认设置", False)
         self.update()
 
     def _toggle_topmost(self, enabled: bool) -> None:

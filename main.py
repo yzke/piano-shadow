@@ -116,6 +116,10 @@ class TrayController:
         )
         self.menu.addAction(download)
         self.menu.addSeparator()
+        reset_action = QAction("恢复默认设置…", self.menu)
+        reset_action.triggered.connect(window.reset_settings)
+        self.menu.addAction(reset_action)
+        self.menu.addSeparator()
         quit_action = QAction("退出 Piano Shadow", self.menu)
         quit_action.triggered.connect(app.quit)
         self.menu.addAction(quit_action)
@@ -152,10 +156,10 @@ def run(config: AppConfig) -> int:
     app.setQuitOnLastWindowClosed(True)
     window = OverlayWindow(config)
     window.show()
+    window.restore_settings()
     tray = TrayController(app, window) if QSystemTrayIcon.isSystemTrayAvailable() else None
     if tray:
         app.setQuitOnLastWindowClosed(False)
-        window._toggle_topmost(True)
     workers: list[object] = []
 
     if config.demo_mode:
@@ -220,6 +224,7 @@ def run(config: AppConfig) -> int:
         capture.start()
 
     def shutdown() -> None:
+        window.save_settings()
         for worker in workers:
             stop = getattr(worker, "stop", None)
             if stop:
