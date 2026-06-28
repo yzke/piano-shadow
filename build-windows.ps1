@@ -43,6 +43,7 @@ try {
         --add-data "$(Join-Path $BuildRoot 'gpu_bridge.py');." `
         --collect-all basic_pitch `
         --collect-all soundcard `
+        --collect-all rtmidi `
         --collect-submodules onnxruntime `
         --exclude-module torch `
         --exclude-module torchlibrosa `

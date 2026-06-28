@@ -34,6 +34,7 @@ from PyQt6.QtGui import (
     QFontMetricsF,
     QLinearGradient,
     QMouseEvent,
+    QKeyEvent,
     QPainter,
     QPainterPath,
     QPen,
@@ -54,6 +55,7 @@ from PyQt6.QtWidgets import (
 
 from config import AppConfig, PIANO_MODEL_MIN_BYTES, PIANO_MODEL_PATH
 from note_model import NoteEvent, PIANO_HIGH, PIANO_LOW, is_black_key
+from performance import MAJOR_ROOTS, MINOR_ROOTS, PerformanceController
 
 # Stable pitch-class colors across every octave: C4 and C7, for example,
 # always share the same color. Sharps receive their own intermediate hue.
@@ -95,6 +97,8 @@ class OverlayWindow(QWidget):
     model_download_progress_received = pyqtSignal(int, int)
     model_download_source_received = pyqtSignal(str)
     model_download_finished_received = pyqtSignal(bool, str)
+    performance_mode_changed = pyqtSignal(bool)
+    performance_note_received = pyqtSignal(int, int)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -107,6 +111,9 @@ class OverlayWindow(QWidget):
         self._always_on_top = True
         self._position_locked = False
         self._keyboard_only = False
+        self._performance_mode = False
+        self._performance_help = False
+        self._performance: PerformanceController | None = None
         self._click_through = False
         self._model_download_prompt_shown = False
         self._gpu_requirements_confirmed = False
@@ -131,6 +138,7 @@ class OverlayWindow(QWidget):
         self.model_download_finished_received.connect(
             self._finish_model_download
         )
+        self.performance_note_received.connect(self._show_performance_note)
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -156,7 +164,7 @@ class OverlayWindow(QWidget):
 
     def add_notes(self, events: list[NoteEvent]) -> None:
         """Replay a transcribed chunk in onset order, preserving chords."""
-        if not events:
+        if not events or self._performance_mode:
             return
         ordered = sorted(events, key=lambda event: (event.start, event.midi))
         groups: list[list[NoteEvent]] = []
@@ -256,11 +264,15 @@ class OverlayWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         now = time.monotonic()
-        if not self._keyboard_only:
+        if self._performance_mode:
+            self._draw_glass(painter)
+            self._draw_performance_status(painter)
+        elif not self._keyboard_only:
             self._draw_glass(painter)
             self._draw_status(painter)
             self._draw_settings(painter)
-        self._draw_pitch_legend(painter)
+        if not self._performance_mode:
+            self._draw_pitch_legend(painter)
         self._draw_controls(painter)
         white, black = self._keyboard_geometry()
         self._draw_note_labels(painter, now, white, black)
@@ -345,9 +357,13 @@ class OverlayWindow(QWidget):
         size = max(21.0, min(27.0, self.height() * 0.17))
         gap = 5.0
         names = (
+            ("performance", "input_mode", "performance_help")
+            if self._performance_mode
+            else
             ("lock",)
             if self._keyboard_only
             else (
+                "performance",
                 "minimal",
                 "model",
                 "lock",
@@ -364,6 +380,64 @@ class OverlayWindow(QWidget):
             for index, name in enumerate(names)
         }
 
+    def _draw_performance_status(self, p: QPainter) -> None:
+        if self._performance is None:
+            return
+        controller = self._performance
+        roots = MAJOR_ROOTS if controller.mode == "major" else MINOR_ROOTS
+        tonic = roots[controller.scale_index]
+        color = self._note_color(60 + tonic, 245)
+        p.save()
+        p.setOpacity(self._active_opacity)
+        title_font = QFont(
+            "Inter, Noto Sans CJK SC, sans-serif",
+            max(10, round(self.height() * 0.072)),
+        )
+        title_font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(title_font)
+        p.setPen(color)
+        p.drawText(
+            QRectF(24, 17, self.width() - 88, 24),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            controller.scale_name,
+        )
+        p.setFont(QFont("Inter, Noto Sans CJK SC, sans-serif", 7))
+        p.setPen(QColor(201, 220, 237, 165))
+        mode_text = (
+            "键盘"
+            if controller.input_mode == "keyboard"
+            else (
+                controller.midi.name
+                if controller.midi.name != "MIDI 未连接"
+                else "MIDI · 未连接"
+            )
+        )
+        p.drawText(
+            QRectF(24, 39, self.width() - 88, 16),
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            mode_text,
+        )
+        if self._performance_help:
+            help_rect = QRectF(
+                self.width() * 0.18,
+                58,
+                self.width() * 0.64,
+                48,
+            )
+            p.setPen(QPen(QColor(255, 255, 255, 22), 0.8))
+            p.setBrush(QColor(8, 14, 24, 205))
+            p.drawRoundedRect(help_rect, 10, 10)
+            p.setFont(QFont("Inter, Noto Sans CJK SC, sans-serif", 7))
+            p.setPen(QColor(210, 225, 239, 205))
+            p.drawText(
+                help_rect.adjusted(10, 4, -10, -4),
+                Qt.AlignmentFlag.AlignCenter,
+                "F1–F7 / 1–7 / Q–U / A–J / Z–M：C2–B6\n"
+                "← 小调  → 大调  ↑↓ 八度\n"
+                "Shift 升音  Ctrl 降音  Space 延音  Enter 休止",
+            )
+        p.restore()
+
     def _draw_controls(self, p: QPainter) -> None:
         p.save()
         for name, rect in self._control_rects().items():
@@ -372,6 +446,12 @@ class OverlayWindow(QWidget):
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
                 or (name == "model" and self.config.model == "piano-gpu")
+                or (name == "performance_help" and self._performance_help)
+                or (
+                    name == "input_mode"
+                    and self._performance is not None
+                    and self._performance.input_mode == "midi"
+                )
             )
             p.setPen(QPen(QColor(132, 208, 246, 105) if active else QColor(255, 255, 255, 25)))
             p.setBrush(QColor(61, 139, 186, 90) if active else QColor(19, 29, 45, 155))
@@ -398,6 +478,38 @@ class OverlayWindow(QWidget):
             ):
                 p.drawLine(QLineF(x, y, x + dx * short, y))
                 p.drawLine(QLineF(x, y, x, y + dy * short))
+        elif name == "performance":
+            for offset in (-1.65, 0, 1.65):
+                key = QRectF(
+                    cx + offset * unit - 0.7 * unit,
+                    cy - 2.25 * unit,
+                    1.4 * unit,
+                    4.5 * unit,
+                )
+                p.drawRoundedRect(key, unit * 0.25, unit * 0.25)
+            p.drawLine(
+                QLineF(cx - 2.45 * unit, cy + 2.35 * unit, cx + 2.45 * unit, cy + 2.35 * unit)
+            )
+        elif name == "performance_help":
+            font = QFont("Inter, Arial, sans-serif", max(8, round(unit * 2.4)))
+            font.setWeight(QFont.Weight.Bold)
+            p.setFont(font)
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "?")
+        elif name == "input_mode":
+            if self._performance and self._performance.input_mode == "midi":
+                p.drawEllipse(
+                    QRectF(cx - 1.5 * unit, cy - 1.8 * unit, 3.0 * unit, 3.0 * unit)
+                )
+                for offset in (-0.8, 0, 0.8):
+                    p.drawPoint(QPoint(round(cx + offset * unit), round(cy - 0.4 * unit)))
+                p.drawLine(QLineF(cx, cy + 1.2 * unit, cx, cy + 2.2 * unit))
+            else:
+                p.drawRoundedRect(
+                    QRectF(cx - 2.4 * unit, cy - 1.6 * unit, 4.8 * unit, 3.2 * unit),
+                    unit * 0.35,
+                    unit * 0.35,
+                )
+                p.drawLine(QLineF(cx - 1.6 * unit, cy + 0.4 * unit, cx + 1.6 * unit, cy + 0.4 * unit))
         elif name == "model":
             chip = QRectF(cx - 2.15 * unit, cy - 1.75 * unit, 4.3 * unit, 3.5 * unit)
             p.drawRoundedRect(chip, unit * 0.45, unit * 0.45)
@@ -758,6 +870,113 @@ class OverlayWindow(QWidget):
         if not self._position_locked:
             self.setCursor(Qt.CursorShape.OpenHandCursor)
 
+    @staticmethod
+    def _performance_key_token(event: QKeyEvent) -> str | None:
+        key = event.key()
+        function_keys = {
+            int(Qt.Key.Key_F1) + index: f"F{index + 1}"
+            for index in range(7)
+        }
+        if key in function_keys:
+            return function_keys[key]
+        text = event.text().upper()
+        if text in "1234567QWERTYUASDFGHJZXCVBNM":
+            return text
+        return None
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if not self._performance_mode or self._performance is None:
+            super().keyPressEvent(event)
+            return
+        if event.isAutoRepeat():
+            event.accept()
+            return
+        controller = self._performance
+        if controller.input_mode != "keyboard":
+            event.accept()
+            return
+        key = event.key()
+        if key == Qt.Key.Key_Space:
+            controller.set_sustain(True)
+        elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            controller.set_rest(True)
+        elif key == Qt.Key.Key_Down:
+            controller.shift_octave(1)
+        elif key == Qt.Key.Key_Up:
+            controller.shift_octave(-1)
+        elif key == Qt.Key.Key_Right:
+            controller.next_major()
+        elif key == Qt.Key.Key_Left:
+            controller.next_minor()
+        else:
+            token = self._performance_key_token(event)
+            if token:
+                modifiers = event.modifiers()
+                shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+                control = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+                accidental = 0 if shift and control else 1 if shift else -1 if control else 0
+                controller.press(token, accidental)
+        self.update()
+        event.accept()
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if not self._performance_mode or self._performance is None:
+            super().keyReleaseEvent(event)
+            return
+        if event.isAutoRepeat():
+            event.accept()
+            return
+        if self._performance.input_mode != "keyboard":
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space:
+            self._performance.set_sustain(False)
+        elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._performance.set_rest(False)
+        else:
+            token = self._performance_key_token(event)
+            if token:
+                self._performance.release(token)
+        self.update()
+        event.accept()
+
+    @pyqtSlot(int, int)
+    def _show_performance_note(self, midi: int, velocity: int) -> None:
+        event = NoteEvent(
+            midi=midi,
+            start=0.0,
+            end=0.8,
+            velocity=velocity,
+            confidence=1.0,
+        )
+        self._display_notes([event])
+
+    def _toggle_performance_mode(self, enabled: bool) -> None:
+        if enabled == self._performance_mode:
+            return
+        self._performance_mode = enabled
+        self._performance_help = False
+        self.visual_notes.clear()
+        if enabled:
+            self._toggle_position_lock(False)
+            self._performance = PerformanceController(
+                self.performance_note_received.emit
+            )
+            self._performance.reset()
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            self.activateWindow()
+            self.raise_()
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            self.set_status("演奏模式", False)
+        else:
+            if self._performance is not None:
+                self._performance.close()
+                self._performance = None
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.set_status("Piano Shadow · Listening", False)
+        self.performance_mode_changed.emit(enabled)
+        self.update()
+
     def _control_at(self, point) -> str | None:
         for name, rect in self._control_rects().items():
             if rect.contains(point):
@@ -798,7 +1017,13 @@ class OverlayWindow(QWidget):
         event.accept()
 
     def _activate_control(self, name: str) -> None:
-        if name == "minimal":
+        if name == "performance":
+            self._toggle_performance_mode(not self._performance_mode)
+        elif name == "performance_help":
+            self._performance_help = not self._performance_help
+        elif name == "input_mode" and self._performance is not None:
+            self._performance.toggle_input_mode()
+        elif name == "minimal":
             self._toggle_keyboard_only(True)
         elif name == "model":
             next_model = (
@@ -854,11 +1079,16 @@ class OverlayWindow(QWidget):
         status.triggered.connect(lambda checked: self._set_show_status(checked))
         minimal = QAction("纯键盘模式", self, checkable=True, checked=self._keyboard_only)
         minimal.triggered.connect(self._toggle_keyboard_only)
+        performance = QAction(
+            "演奏模式", self, checkable=True, checked=self._performance_mode
+        )
+        performance.triggered.connect(self._toggle_performance_mode)
         quit_action = QAction("退出", self)
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(top)
         menu.addAction(locked)
         menu.addAction(minimal)
+        menu.addAction(performance)
         menu.addSeparator()
         model_menu = menu.addMenu("识别模型")
         model_group = QActionGroup(model_menu)

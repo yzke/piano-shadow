@@ -89,6 +89,21 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window._active_key_opacity(), 0.30)
         window.close()
 
+    def test_performance_controls_are_minimal(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        self.assertEqual(
+            tuple(window._control_rects()),
+            ("performance", "input_mode", "performance_help"),
+        )
+        self.assertEqual(window._performance.input_mode, "keyboard")
+        window._activate_control("performance_help")
+        self.assertTrue(window._performance_help)
+        window._activate_control("input_mode")
+        self.assertEqual(window._performance.input_mode, "midi")
+        window._toggle_performance_mode(False)
+        window.close()
+
     def test_settings_restore_independent_opacities(self):
         with tempfile.TemporaryDirectory() as directory:
             QSettings.setDefaultFormat(QSettings.Format.IniFormat)

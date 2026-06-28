@@ -3,3 +3,4 @@ numpy>=1.23,<2.0
 soundcard>=0.4.3
 basic-pitch>=0.3.0
 piano-transcription-inference>=0.0.6
+python-rtmidi>=1.5.8,<2

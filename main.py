@@ -61,6 +61,12 @@ class DemoPlayer:
         ]
         self.window.add_notes(events)
 
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self.timer.stop()
+        else:
+            self.timer.start(1050)
+
 
 def resource_path(relative: str) -> Path:
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -89,10 +95,13 @@ class TrayController:
         self.lock_action.triggered.connect(window._toggle_position_lock)
         self.minimal_action = QAction("纯键盘模式", self.menu, checkable=True)
         self.minimal_action.triggered.connect(window._toggle_keyboard_only)
+        self.performance_action = QAction("演奏模式", self.menu, checkable=True)
+        self.performance_action.triggered.connect(window._toggle_performance_mode)
         self.menu.addAction(self.show_action)
         self.menu.addAction(self.top_action)
         self.menu.addAction(self.lock_action)
         self.menu.addAction(self.minimal_action)
+        self.menu.addAction(self.performance_action)
         self.menu.addSeparator()
 
         model_menu = self.menu.addMenu("识别模型")
@@ -134,6 +143,7 @@ class TrayController:
         self.top_action.setChecked(self.window._always_on_top)
         self.lock_action.setChecked(self.window._position_locked)
         self.minimal_action.setChecked(self.window._keyboard_only)
+        self.performance_action.setChecked(self.window._performance_mode)
         self.model_actions[self.window.config.model].setChecked(True)
 
     def _toggle_window(self) -> None:
@@ -165,7 +175,9 @@ def run(config: AppConfig) -> int:
     if config.demo_mode:
         window.set_status("Piano Shadow · Demo")
         try:
-            workers.append(DemoPlayer(window, config.demo_midi))
+            demo = DemoPlayer(window, config.demo_midi)
+            workers.append(demo)
+            window.performance_mode_changed.connect(demo.set_paused)
         except ValueError as exc:
             window.set_status(str(exc), True)
     else:
@@ -219,12 +231,32 @@ def run(config: AppConfig) -> int:
             worker.start()
 
         window.model_selected.connect(start_transcriber)
+
+        def set_performance_mode(enabled: bool) -> None:
+            old = current_transcriber["worker"]
+            if enabled:
+                if old is not None:
+                    old.stop()
+                    current_transcriber["worker"] = None
+                while True:
+                    try:
+                        audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                window.set_status("演奏模式 · 音频识别已暂停", False)
+            elif current_transcriber["worker"] is None:
+                start_transcriber(config.model)
+
+        window.performance_mode_changed.connect(set_performance_mode)
         workers.append(capture)
         start_transcriber(config.model)
         capture.start()
 
     def shutdown() -> None:
         window.save_settings()
+        if window._performance is not None:
+            window._performance.close()
+            window._performance = None
         for worker in workers:
             stop = getattr(worker, "stop", None)
             if stop:
