@@ -9,6 +9,7 @@ import platform
 import threading
 import time
 import urllib.request
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from config import AppConfig
+from config import AppConfig, PIANO_MODEL_MIN_BYTES, PIANO_MODEL_PATH
 from note_model import NoteEvent, PIANO_HIGH, PIANO_LOW, is_black_key
 
 # Stable pitch-class colors across every octave: C4 and C7, for example,
@@ -81,6 +82,7 @@ class OverlayWindow(QWidget):
     model_fallback_received = pyqtSignal(str)
     model_download_required = pyqtSignal(str, str)
     model_download_progress_received = pyqtSignal(int, int)
+    model_download_source_received = pyqtSignal(str)
     model_download_finished_received = pyqtSignal(bool, str)
 
     def __init__(self, config: AppConfig) -> None:
@@ -96,6 +98,7 @@ class OverlayWindow(QWidget):
         self._keyboard_only = False
         self._click_through = False
         self._model_download_prompt_shown = False
+        self._gpu_requirements_confirmed = False
         self._model_download_thread: threading.Thread | None = None
         self._model_download_cancel = threading.Event()
         self._model_download_progress: QProgressDialog | None = None
@@ -110,6 +113,9 @@ class OverlayWindow(QWidget):
         self.model_download_required.connect(self._show_model_download_dialog)
         self.model_download_progress_received.connect(
             self._update_model_download_progress
+        )
+        self.model_download_source_received.connect(
+            self._update_model_download_source
         )
         self.model_download_finished_received.connect(
             self._finish_model_download
@@ -853,6 +859,21 @@ class OverlayWindow(QWidget):
     def _select_model(self, model_name: str) -> None:
         if model_name == self.config.model:
             return
+        if model_name == "piano-gpu":
+            if not self._confirm_gpu_requirements():
+                self.update()
+                return
+            if (
+                not PIANO_MODEL_PATH.exists()
+                or PIANO_MODEL_PATH.stat().st_size < PIANO_MODEL_MIN_BYTES
+            ):
+                from config import PIANO_MODEL_URL
+
+                self.model_download_required.emit(
+                    str(PIANO_MODEL_PATH), PIANO_MODEL_URL
+                )
+                self.update()
+                return
         self.config.model = model_name
         self.model_selected.emit(model_name)
         self.update()
@@ -864,6 +885,8 @@ class OverlayWindow(QWidget):
 
     @pyqtSlot(str, str)
     def _show_model_download_dialog(self, destination: str, url: str) -> None:
+        if not self._confirm_gpu_requirements():
+            return
         if self._model_download_prompt_shown:
             return
         self._model_download_prompt_shown = True
@@ -899,6 +922,28 @@ class OverlayWindow(QWidget):
         else:
             self._model_download_prompt_shown = False
 
+    def _confirm_gpu_requirements(self) -> bool:
+        if self._gpu_requirements_confirmed:
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("启用 Piano GPU 前请确认")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(
+            "<b>Piano GPU 仅支持 NVIDIA 显卡。</b><br><br>"
+            "继续前请确认电脑具备：<br>"
+            "• NVIDIA 独立显卡与可用驱动<br>"
+            "• CUDA 版 PyTorch 运行环境<br>"
+            "• 约 164MB 的 Piano GPU 模型<br><br>"
+            "不满足条件时程序会自动回退到 Basic Pitch CPU。"
+        )
+        proceed = box.addButton("我已确认，继续", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        confirmed = box.clickedButton() is proceed
+        if confirmed:
+            self._gpu_requirements_confirmed = True
+        return confirmed
+
     def _download_model(self, destination: str, url: str) -> None:
         if self._model_download_thread and self._model_download_thread.is_alive():
             return
@@ -914,57 +959,82 @@ class OverlayWindow(QWidget):
         self._model_download_progress = progress
         self._model_download_cancel.clear()
         progress.canceled.connect(self._model_download_cancel.set)
+        from config import PIANO_MODEL_URLS
+
+        sources = (
+            tuple(dict.fromkeys((url, *PIANO_MODEL_URLS)))
+            if url in PIANO_MODEL_URLS
+            else (url,)
+        )
         self._model_download_thread = threading.Thread(
             target=self._download_model_worker,
-            args=(target, partial, url),
+            args=(target, partial, sources),
             name="model-download",
             daemon=True,
         )
         self._model_download_thread.start()
 
     def _download_model_worker(
-        self, target: Path, partial: Path, url: str
+        self, target: Path, partial: Path, sources: tuple[str, ...]
     ) -> None:
         from config import PIANO_MODEL_MIN_BYTES, PIANO_MODEL_SHA256
 
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            request = urllib.request.Request(
-                url, headers={"User-Agent": "PianoShadow/0.1"}
-            )
-            with urllib.request.urlopen(request, timeout=45) as response:
-                total = int(response.headers.get("Content-Length", "0"))
-                received = 0
-                with partial.open("wb") as output:
-                    while not self._model_download_cancel.is_set():
-                        block = response.read(1024 * 1024)
-                        if not block:
-                            break
-                        output.write(block)
-                        received += len(block)
-                        self.model_download_progress_received.emit(received, total)
-            if self._model_download_cancel.is_set():
-                raise RuntimeError("下载已取消")
-            if not partial.exists() or partial.stat().st_size < PIANO_MODEL_MIN_BYTES:
-                actual = partial.stat().st_size if partial.exists() else 0
-                raise RuntimeError(
-                    f"文件不完整（收到 {actual / 1048576:.1f} MB）"
-                )
-            digest = hashlib.sha256()
-            with partial.open("rb") as downloaded:
-                for block in iter(lambda: downloaded.read(4 * 1024 * 1024), b""):
-                    digest.update(block)
-            if digest.hexdigest() != PIANO_MODEL_SHA256:
-                raise RuntimeError("模型文件校验失败，请更换下载源后重试")
-            os.replace(partial, target)
-        except Exception as exc:
+        errors: list[str] = []
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for url in sources:
             try:
                 partial.unlink(missing_ok=True)
             except OSError:
                 pass
-            self.model_download_finished_received.emit(False, str(exc))
-            return
-        self.model_download_finished_received.emit(True, str(target))
+            host = urllib.parse.urlparse(url).netloc or "本地文件"
+            self.model_download_source_received.emit(host)
+            try:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": "PianoShadow/0.2"}
+                )
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    total = int(response.headers.get("Content-Length", "0"))
+                    received = 0
+                    with partial.open("wb") as output:
+                        while not self._model_download_cancel.is_set():
+                            block = response.read(1024 * 1024)
+                            if not block:
+                                break
+                            output.write(block)
+                            received += len(block)
+                            self.model_download_progress_received.emit(
+                                received, total
+                            )
+                if self._model_download_cancel.is_set():
+                    raise RuntimeError("下载已取消")
+                if (
+                    not partial.exists()
+                    or partial.stat().st_size < PIANO_MODEL_MIN_BYTES
+                ):
+                    actual = partial.stat().st_size if partial.exists() else 0
+                    raise RuntimeError(
+                        f"文件不完整（收到 {actual / 1048576:.1f} MB）"
+                    )
+                digest = hashlib.sha256()
+                with partial.open("rb") as downloaded:
+                    for block in iter(
+                        lambda: downloaded.read(4 * 1024 * 1024), b""
+                    ):
+                        digest.update(block)
+                if digest.hexdigest() != PIANO_MODEL_SHA256:
+                    raise RuntimeError("模型文件 SHA-256 校验失败")
+                os.replace(partial, target)
+                self.model_download_finished_received.emit(True, str(target))
+                return
+            except Exception as exc:
+                errors.append(f"{host}: {exc}")
+                if self._model_download_cancel.is_set():
+                    break
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.model_download_finished_received.emit(False, "\n".join(errors))
 
     def _update_model_download_progress(self, received: int, total: int) -> None:
         if self._model_download_progress is None:
@@ -980,6 +1050,13 @@ class OverlayWindow(QWidget):
         else:
             self._model_download_progress.setLabelText(
                 f"正在下载 Piano GPU 模型… {received / 1048576:.1f} MB"
+            )
+
+    @pyqtSlot(str)
+    def _update_model_download_source(self, source: str) -> None:
+        if self._model_download_progress is not None:
+            self._model_download_progress.setWindowTitle(
+                f"Piano Shadow 模型安装 · {source}"
             )
 
     @pyqtSlot(bool, str)
@@ -999,6 +1076,7 @@ class OverlayWindow(QWidget):
             return
         QMessageBox.information(self, "模型安装完成", "Piano GPU 模型已安装。")
         self._model_download_prompt_shown = False
+        self._gpu_requirements_confirmed = True
         if self.config.model != "piano-gpu":
             self._select_model("piano-gpu")
 

@@ -61,6 +61,7 @@ class WindowsOverlayTests(unittest.TestCase):
     def test_model_chip_switches_backend_selection(self):
         config = AppConfig(demo_mode=True, model="basic-pitch")
         window = OverlayWindow(config)
+        window._gpu_requirements_confirmed = True
         selected = []
         window.model_selected.connect(selected.append)
         self.assertIn("model", window._control_rects())
@@ -111,7 +112,9 @@ class WindowsOverlayTests(unittest.TestCase):
                     hashlib.sha256(payload).hexdigest(),
                 ),
             ):
-                window._download_model_worker(target, partial, source.as_uri())
+                window._download_model_worker(
+                    target, partial, (source.as_uri(),)
+                )
             self.app.processEvents()
             self.assertEqual(target.read_bytes(), payload)
             self.assertEqual(results, [(True, str(target))])

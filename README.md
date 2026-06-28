@@ -181,9 +181,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 默认优先启动 `Piano GPU`。如果缺少 PyTorch、CUDA、兼容显卡或模型权重加载失败，
 程序会自动切换到 `Basic Pitch`，UI 模型芯片也会同步恢复为未点亮状态。
-GPU 权重不打包进 EXE。检测到权重缺失时，程序会提示并可直接自动下载、校验、安装
-到约定目录，完成后自动切换到 GPU 模型；也可选择浏览器下载后的本地 `.pth` 文件，
-程序会复制到模型目录并执行相同的 SHA-256 校验。
+GPU 权重不打包进 EXE。切换 GPU 或下载模型前，程序会明确提示需要 NVIDIA 显卡、
+可用驱动和 CUDA 版 PyTorch。检测到权重缺失时可直接自动下载、校验、安装到约定
+目录；下载器优先使用项目 GitHub Release，失败后自动切换 Zenodo。也可选择浏览器
+下载后的本地 `.pth` 文件，程序会复制到模型目录并执行相同的 SHA-256 校验。
+安装版会自动检测 `%LOCALAPPDATA%\PianoShadow\venv`：若其中已有可用 CUDA PyTorch，
+程序通过无窗口本地子进程完成 GPU 推理并把音符事件传回悬浮窗，无需在 EXE 中重复
+打包 4GB 以上的 CUDA 运行时。
 托盘菜单提供“下载 Piano GPU 模型”入口。
 状态栏仅显示模型名称，不显示具体 GPU 型号。按下时白键采用高饱和、高反差渐变，
 黑键采用更柔和的玻璃染色；未按下时仍保持真实黑白键外观。

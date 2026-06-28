@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import logging
 import contextlib
+import base64
 import io
+import json
 import queue
+import os
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from collections.abc import Callable
 
 import numpy as np
@@ -58,6 +64,9 @@ class PianoGpuTranscriptionWorker:
             self.on_status("Piano GPU 模型未安装 · 自动回退 Basic Pitch", True)
             self.on_download_required(str(PIANO_MODEL_PATH), PIANO_MODEL_URL)
             self.on_fallback("basic-pitch")
+            return
+        if getattr(sys, "frozen", False):
+            self._run_external_gpu()
             return
         previous_logging_level = logging.root.manager.disable
         logging.disable(logging.WARNING)
@@ -165,6 +174,138 @@ class PianoGpuTranscriptionWorker:
                     self.on_notes(notes)
             except Exception as exc:
                 self.on_status(f"Piano GPU 转录失败 · 将继续监听（{exc}）", True)
+
+    def _run_external_gpu(self) -> None:
+        """Bridge the frozen UI to the optional local CUDA Python environment."""
+        local_app_data = Path(
+            os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        )
+        python = local_app_data / "PianoShadow" / "venv" / "Scripts" / "python.exe"
+        bridge = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "gpu_bridge.py"
+        if not python.exists():
+            self.on_status("Piano GPU 组件未安装 · 自动回退 Basic Pitch", True)
+            self.on_fallback("basic-pitch")
+            return
+        try:
+            probe = subprocess.run(
+                [
+                    str(python),
+                    "-c",
+                    "import torch;raise SystemExit(0 if torch.cuda.is_available() else 1)",
+                ],
+                capture_output=True,
+                timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if probe.returncode != 0:
+                raise RuntimeError("本机 CUDA PyTorch 不可用")
+            process = subprocess.Popen(
+                [
+                    str(python),
+                    "-u",
+                    str(bridge),
+                    "--model",
+                    str(PIANO_MODEL_PATH),
+                    "--sample-rate",
+                    str(self.config.sample_rate),
+                    "--min-amp",
+                    str(self.config.min_amp),
+                    "--min-velocity",
+                    str(self.config.min_velocity),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            self.on_status(f"Piano GPU 桥接失败（{exc}）", True)
+            self.on_fallback("basic-pitch")
+            return
+
+        fallback_sent = threading.Event()
+
+        def read_results() -> None:
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    message = json.loads(line)
+                    kind = message.get("type")
+                    if kind == "ready":
+                        self.on_status("Listening · Piano GPU（本机环境）", False)
+                    elif kind == "notes":
+                        notes = [
+                            NoteEvent(
+                                midi=int(note["midi"]),
+                                start=float(note["start"]),
+                                end=float(note["end"]),
+                                velocity=int(note["velocity"]),
+                                confidence=float(note.get("confidence", 1.0)),
+                            )
+                            for note in message.get("notes", [])
+                        ]
+                        notes = filter_and_merge(
+                            notes,
+                            min_confidence=0.0,
+                            min_velocity=self.config.min_velocity,
+                        )
+                        if notes:
+                            self.on_notes(notes)
+                    elif kind in {"warning", "error"}:
+                        self.on_status(str(message.get("message", "GPU 桥接错误")), True)
+                        if kind == "error":
+                            fallback_sent.set()
+                            self.on_fallback("basic-pitch")
+            except Exception as exc:
+                if not self._stop.is_set():
+                    self.on_status(f"GPU 桥接通信失败（{exc}）", True)
+
+        reader = threading.Thread(
+            target=read_results, name="gpu-bridge-results", daemon=True
+        )
+        reader.start()
+        self.on_status("Loading · 本机 Piano GPU 环境", False)
+        try:
+            assert process.stdin is not None
+            while not self._stop.is_set() and process.poll() is None:
+                try:
+                    chunk = self.input.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                chunks = [chunk]
+                while True:
+                    try:
+                        chunks.append(self.input.get_nowait())
+                    except queue.Empty:
+                        break
+                audio = np.ascontiguousarray(np.concatenate(chunks), dtype="<f4")
+                payload = base64.b64encode(audio.tobytes()).decode("ascii")
+                process.stdin.write(
+                    json.dumps({"type": "audio", "audio": payload}) + "\n"
+                )
+                process.stdin.flush()
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.on_status(f"GPU 音频传输失败（{exc}）", True)
+        finally:
+            if process.poll() is None:
+                try:
+                    if process.stdin:
+                        process.stdin.write('{"type":"stop"}\n')
+                        process.stdin.flush()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+            reader.join(timeout=1)
+        if not self._stop.is_set() and not fallback_sent.is_set():
+            self.on_status("Piano GPU 进程已退出 · 自动回退 Basic Pitch", True)
+            self.on_fallback("basic-pitch")
 
     @staticmethod
     def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:

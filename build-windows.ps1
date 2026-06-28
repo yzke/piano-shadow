@@ -40,6 +40,7 @@ try {
         --name $ExeBase `
         --icon (Join-Path $BuildRoot "assets\piano-shadow.ico") `
         --add-data "$(Join-Path $BuildRoot 'assets\piano-shadow-icon.png');assets" `
+        --add-data "$(Join-Path $BuildRoot 'gpu_bridge.py');." `
         --collect-all basic_pitch `
         --collect-all soundcard `
         --collect-submodules onnxruntime `

@@ -7,10 +7,13 @@ import os
 import platform
 from pathlib import Path
 
-PIANO_MODEL_URL = (
+PIANO_MODEL_URLS = (
+    "https://github.com/yzke/piano-shadow/releases/download/v0.2.1/"
+    "note_F1%3D0.9677_pedal_F1%3D0.9186.pth",
     "https://zenodo.org/records/4034264/files/"
-    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1"
+    "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1",
 )
+PIANO_MODEL_URL = PIANO_MODEL_URLS[0]
 APP_DATA_DIR = (
     Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     / "PianoShadow"
