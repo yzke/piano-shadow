@@ -7,9 +7,14 @@ import os
 import platform
 from pathlib import Path
 
-PIANO_MODEL_URLS = (
+PIANO_MODEL_GITHUB_URL = (
     "https://github.com/yzke/piano-shadow/releases/download/v0.2.1/"
-    "note_F1%3D0.9677_pedal_F1%3D0.9186.pth",
+    "note_F1.0.9677_pedal_F1.0.9186.pth"
+)
+PIANO_MODEL_URLS = (
+    PIANO_MODEL_GITHUB_URL,
+    f"https://gh-proxy.com/{PIANO_MODEL_GITHUB_URL}",
+    f"https://ghfast.top/{PIANO_MODEL_GITHUB_URL}",
     "https://zenodo.org/records/4034264/files/"
     "CRNN_note_F1%3D0.9677_pedal_F1%3D0.9186.pth?download=1",
 )
