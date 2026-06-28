@@ -143,10 +143,6 @@ class OverlayWindow(QWidget):
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
-        self._topmost_timer = QTimer(self)
-        self._topmost_timer.setInterval(800)
-        self._topmost_timer.timeout.connect(self._maintain_topmost)
-        self._topmost_timer.start()
 
     def _setup_window(self) -> None:
         self.setWindowTitle("Piano Shadow")
@@ -264,15 +260,13 @@ class OverlayWindow(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         now = time.monotonic()
-        if self._performance_mode:
-            self._draw_glass(painter)
-            self._draw_performance_status(painter)
-        elif not self._keyboard_only:
+        if not self._keyboard_only:
             self._draw_glass(painter)
             self._draw_status(painter)
             self._draw_settings(painter)
-        if not self._performance_mode:
-            self._draw_pitch_legend(painter)
+        if self._performance_mode:
+            self._draw_performance_status(painter)
+        self._draw_pitch_legend(painter)
         self._draw_controls(painter)
         white, black = self._keyboard_geometry()
         self._draw_note_labels(painter, now, white, black)
@@ -357,9 +351,6 @@ class OverlayWindow(QWidget):
         size = max(21.0, min(27.0, self.height() * 0.17))
         gap = 5.0
         names = (
-            ("performance", "input_mode", "performance_help")
-            if self._performance_mode
-            else
             ("lock",)
             if self._keyboard_only
             else (
@@ -372,6 +363,7 @@ class OverlayWindow(QWidget):
                 "larger",
                 "keyboard_opacity",
                 "active_opacity",
+                *(("input_mode", "performance_help") if self._performance_mode else ()),
             )
         )
         start = self.width() - 20.0 - len(names) * size - (len(names) - 1) * gap
@@ -397,25 +389,9 @@ class OverlayWindow(QWidget):
         p.setFont(title_font)
         p.setPen(color)
         p.drawText(
-            QRectF(24, 17, self.width() - 88, 24),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+            QRectF(24, 43, 112, 23),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             controller.scale_name,
-        )
-        p.setFont(QFont("Inter, Noto Sans CJK SC, sans-serif", 7))
-        p.setPen(QColor(201, 220, 237, 165))
-        mode_text = (
-            "键盘"
-            if controller.input_mode == "keyboard"
-            else (
-                controller.midi.name
-                if controller.midi.name != "MIDI 未连接"
-                else "MIDI · 未连接"
-            )
-        )
-        p.drawText(
-            QRectF(24, 39, self.width() - 88, 16),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
-            mode_text,
         )
         if self._performance_help:
             help_rect = QRectF(
@@ -879,9 +855,12 @@ class OverlayWindow(QWidget):
         }
         if key in function_keys:
             return function_keys[key]
-        text = event.text().upper()
-        if text in "1234567QWERTYUASDFGHJZXCVBNM":
-            return text
+        # Ctrl+letter produces a control character in event.text() on Windows.
+        # Map physical Qt key codes so Shift/Ctrl accidentals behave identically.
+        if ord("0") <= key <= ord("9") or ord("A") <= key <= ord("Z"):
+            token = chr(key)
+            if token in "1234567QWERTYUASDFGHJZXCVBNM":
+                return token
         return None
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -1534,10 +1513,6 @@ class OverlayWindow(QWidget):
         if platform.system() == "Windows":
             self._always_on_top = enabled
             self._set_windows_topmost(enabled)
-            if enabled:
-                self._topmost_timer.start()
-            else:
-                self._topmost_timer.stop()
             self.update()
             return
         if enabled == self._always_on_top:
@@ -1553,10 +1528,7 @@ class OverlayWindow(QWidget):
         # WSLg/XWayland may apply placement once more after show().
         QTimer.singleShot(0, lambda position=old_position: self.move(position))
         if enabled:
-            self._topmost_timer.start()
             QTimer.singleShot(0, self._maintain_topmost)
-        else:
-            self._topmost_timer.stop()
         self.update()
 
     def _maintain_topmost(self) -> None:

@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QEvent, QSettings, Qt
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QApplication
 
 from config import AppConfig
@@ -89,18 +90,48 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window._active_key_opacity(), 0.30)
         window.close()
 
-    def test_performance_controls_are_minimal(self):
+    def test_performance_keeps_standard_controls_and_adds_help(self):
         window = OverlayWindow(AppConfig(demo_mode=True))
         window._toggle_performance_mode(True)
         self.assertEqual(
             tuple(window._control_rects()),
-            ("performance", "input_mode", "performance_help"),
+            (
+                "performance",
+                "minimal",
+                "model",
+                "lock",
+                "top",
+                "smaller",
+                "larger",
+                "keyboard_opacity",
+                "active_opacity",
+                "input_mode",
+                "performance_help",
+            ),
         )
         self.assertEqual(window._performance.input_mode, "keyboard")
         window._activate_control("performance_help")
         self.assertTrue(window._performance_help)
         window._activate_control("input_mode")
         self.assertEqual(window._performance.input_mode, "midi")
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_ctrl_performance_key_uses_physical_key_code(self):
+        event = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Q,
+            Qt.KeyboardModifier.ControlModifier,
+            "\x11",
+        )
+        self.assertEqual(OverlayWindow._performance_key_token(event), "Q")
+
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        played = []
+        window._performance.synth.note_on = lambda midi, velocity: played.append(midi)
+        window.keyPressEvent(event)
+        self.assertEqual(played, [59])  # Q is C4; Ctrl lowers it to B3.
         window._toggle_performance_mode(False)
         window.close()
 
