@@ -53,8 +53,10 @@ class PianoGpuTranscriptionWorker:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=2)
+        if self._thread and self._thread is not threading.current_thread():
+            # Do not overlap the large piano model with a replacement model.
+            # This wait happens on the switch coordinator, never the Qt thread.
+            self._thread.join()
 
     def _run(self) -> None:
         if (

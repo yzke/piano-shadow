@@ -6,6 +6,8 @@ import queue
 import random
 import signal
 import sys
+import gc
+import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer
@@ -95,18 +97,38 @@ class TrayController:
         self.lock_action.triggered.connect(window._toggle_position_lock)
         self.minimal_action = QAction("纯键盘模式", self.menu, checkable=True)
         self.minimal_action.triggered.connect(window._toggle_keyboard_only)
-        self.performance_action = QAction("演奏模式", self.menu, checkable=True)
-        self.performance_action.triggered.connect(window._toggle_performance_mode)
         self.menu.addAction(self.show_action)
+        mode_menu = self.menu.addMenu("可视化模式")
+        mode_group = QActionGroup(mode_menu)
+        mode_group.setExclusive(True)
+        self.piano_mode_action = QAction("钢琴模式", mode_menu, checkable=True)
+        self.erhu_mode_action = QAction(
+            "二胡模式 · Erhu Shadow", mode_menu, checkable=True
+        )
+        mode_group.addAction(self.piano_mode_action)
+        mode_group.addAction(self.erhu_mode_action)
+        mode_menu.addAction(self.piano_mode_action)
+        mode_menu.addAction(self.erhu_mode_action)
+        self.piano_mode_action.triggered.connect(
+            lambda checked: checked and window._set_visual_mode("piano")
+        )
+        self.erhu_mode_action.triggered.connect(
+            lambda checked: checked and window._set_visual_mode("erhu")
+        )
         self.menu.addAction(self.top_action)
         self.menu.addAction(self.lock_action)
         self.menu.addAction(self.minimal_action)
-        self.menu.addAction(self.performance_action)
         self.menu.addSeparator()
 
-        model_menu = self.menu.addMenu("识别模型")
+        self.piano_menu = self.menu.addMenu("钢琴功能")
+        self.performance_action = QAction(
+            "演奏模式", self.piano_menu, checkable=True
+        )
+        self.performance_action.triggered.connect(window._toggle_performance_mode)
+        self.piano_menu.addAction(self.performance_action)
+        model_menu = self.piano_menu.addMenu("识别模型 · CPU / GPU")
         basic = QAction("Basic Pitch · CPU", model_menu, checkable=True)
-        gpu = QAction("Piano GPU · 推荐", model_menu, checkable=True)
+        gpu = QAction("Piano GPU · GPU · 推荐", model_menu, checkable=True)
         group = QActionGroup(model_menu)
         group.setExclusive(True)
         group.addAction(basic)
@@ -117,13 +139,48 @@ class TrayController:
         model_menu.addAction(gpu)
         self.model_actions = {"basic-pitch": basic, "piano-gpu": gpu}
 
-        download = QAction("下载 Piano GPU 模型…", self.menu)
+        download = QAction("下载 Piano GPU 模型…", self.piano_menu)
         download.triggered.connect(
             lambda: window.model_download_required.emit(
                 str(PIANO_MODEL_PATH), PIANO_MODEL_URL
             )
         )
-        self.menu.addAction(download)
+        self.piano_menu.addAction(download)
+        self.erhu_menu = self.menu.addMenu("二胡功能")
+        self.erhu_vertical_action = QAction(
+            "竖向琴弦", self.erhu_menu, checkable=True
+        )
+        self.erhu_history_action = QAction(
+            "显示历史轨迹", self.erhu_menu, checkable=True
+        )
+        self.erhu_body_action = QAction(
+            "显示二胡结构件", self.erhu_menu, checkable=True
+        )
+        self.erhu_mirror_action = QAction(
+            "镜像二胡视角", self.erhu_menu, checkable=True
+        )
+        self.erhu_vertical_action.triggered.connect(
+            lambda checked: window._set_erhu_orientation(checked)
+        )
+        self.erhu_history_action.triggered.connect(
+            lambda checked: window._activate_control("erhu_history")
+            if checked != window._erhu_history
+            else None
+        )
+        self.erhu_body_action.triggered.connect(
+            lambda checked: window._activate_control("erhu_body")
+            if checked != window._erhu_body
+            else None
+        )
+        self.erhu_mirror_action.triggered.connect(
+            lambda checked: window._activate_control("erhu_mirror")
+            if checked != window._erhu_mirrored
+            else None
+        )
+        self.erhu_menu.addAction(self.erhu_vertical_action)
+        self.erhu_menu.addAction(self.erhu_history_action)
+        self.erhu_menu.addAction(self.erhu_body_action)
+        self.erhu_menu.addAction(self.erhu_mirror_action)
         self.menu.addSeparator()
         reset_action = QAction("恢复默认设置…", self.menu)
         reset_action.triggered.connect(window.reset_settings)
@@ -143,7 +200,29 @@ class TrayController:
         self.top_action.setChecked(self.window._always_on_top)
         self.lock_action.setChecked(self.window._position_locked)
         self.minimal_action.setChecked(self.window._keyboard_only)
+        self.minimal_action.setText(
+            "纯键盘模式" if self.window._visual_mode == "piano" else "纯二胡可视化"
+        )
         self.performance_action.setChecked(self.window._performance_mode)
+        is_piano = self.window._visual_mode == "piano"
+        self.piano_mode_action.setChecked(is_piano)
+        self.erhu_mode_action.setChecked(not is_piano)
+        self.piano_menu.setEnabled(is_piano)
+        self.erhu_menu.setEnabled(not is_piano)
+        self.erhu_vertical_action.setChecked(self.window._erhu_vertical)
+        self.erhu_history_action.setChecked(self.window._erhu_history)
+        self.erhu_body_action.setEnabled(
+            (not is_piano) and self.window._erhu_vertical
+        )
+        self.erhu_body_action.setChecked(
+            self.window._erhu_vertical and self.window._erhu_body
+        )
+        self.erhu_mirror_action.setEnabled(
+            not is_piano
+        )
+        self.erhu_mirror_action.setChecked(
+            (not is_piano) and self.window._erhu_mirrored
+        )
         self.model_actions[self.window.config.model].setChecked(True)
 
     def _toggle_window(self) -> None:
@@ -188,64 +267,126 @@ def run(config: AppConfig) -> int:
         capture = SystemAudioCapture(
             config.sample_rate, 0.1, audio_queue, window.status_received.emit
         )
-        current_transcriber: dict[str, object | None] = {"worker": None}
+        current_transcriber: dict[str, object | int | None] = {
+            "worker": None,
+            "generation": 0,
+        }
+        switch_lock = threading.Lock()
+        switch_serial_lock = threading.Lock()
+        recognition_paused = threading.Event()
 
         def start_transcriber(model_name: str) -> None:
+            with switch_lock:
+                current_transcriber["generation"] += 1
+                generation = int(current_transcriber["generation"])
             window.set_status(
                 "Switching · Piano GPU"
                 if model_name == "piano-gpu"
-                else "Switching · Basic Pitch",
+                else "Switching · Basic Pitch 主旋律",
                 False,
             )
-            old = current_transcriber["worker"]
-            if old is not None:
-                old.stop()
-            while True:
-                try:
-                    audio_queue.get_nowait()
-                except queue.Empty:
-                    break
             config.model = model_name
-            worker_class = (
-                PianoGpuTranscriptionWorker
-                if model_name == "piano-gpu"
-                else TranscriptionWorker
-            )
-            if model_name == "piano-gpu":
-                worker = worker_class(
-                    config,
-                    audio_queue,
-                    window.notes_received.emit,
-                    window.status_received.emit,
-                    window.model_fallback_received.emit,
-                    window.model_download_required.emit,
+
+            def is_current() -> bool:
+                with switch_lock:
+                    return (
+                        generation == current_transcriber["generation"]
+                        and not recognition_paused.is_set()
+                    )
+
+            def perform_switch() -> None:
+                with switch_lock:
+                    old = current_transcriber["worker"]
+                    current_transcriber["worker"] = None
+                if old is not None:
+                    old.stop()
+                gc.collect()
+                torch_module = sys.modules.get("torch")
+                if (
+                    torch_module is not None
+                    and getattr(torch_module, "cuda", None) is not None
+                    and torch_module.cuda.is_available()
+                ):
+                    torch_module.cuda.empty_cache()
+                if not is_current():
+                    return
+                while True:
+                    try:
+                        audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                worker_class = (
+                    PianoGpuTranscriptionWorker
+                    if model_name == "piano-gpu"
+                    else TranscriptionWorker
                 )
-            else:
-                worker = worker_class(
-                    config,
-                    audio_queue,
-                    window.notes_received.emit,
-                    window.status_received.emit,
+                on_notes = (
+                    lambda notes: is_current()
+                    and window.notes_received.emit(notes)
                 )
-            current_transcriber["worker"] = worker
-            worker.start()
+                on_status = (
+                    lambda text, error=False: is_current()
+                    and window.status_received.emit(text, error)
+                )
+                if model_name == "piano-gpu":
+                    worker = worker_class(
+                        config,
+                        audio_queue,
+                        on_notes,
+                        on_status,
+                        lambda fallback: is_current()
+                        and window.model_fallback_received.emit(fallback),
+                        lambda path, url: is_current()
+                        and window.model_download_required.emit(path, url),
+                    )
+                else:
+                    worker = worker_class(
+                        config, audio_queue, on_notes, on_status
+                    )
+                with switch_lock:
+                    if (
+                        generation != current_transcriber["generation"]
+                        or recognition_paused.is_set()
+                    ):
+                        return
+                    current_transcriber["worker"] = worker
+                worker.start()
+
+            def switch_worker() -> None:
+                # Only one generation may stop/start workers at a time. Newer
+                # generations wait, then discard superseded work via is_current.
+                with switch_serial_lock:
+                    perform_switch()
+
+            threading.Thread(
+                target=switch_worker,
+                name=f"switch-{model_name}-{generation}",
+                daemon=True,
+            ).start()
 
         window.model_selected.connect(start_transcriber)
 
         def set_performance_mode(enabled: bool) -> None:
-            old = current_transcriber["worker"]
             if enabled:
+                recognition_paused.set()
+                with switch_lock:
+                    current_transcriber["generation"] += 1
+                    old = current_transcriber["worker"]
+                    current_transcriber["worker"] = None
                 if old is not None:
                     old.stop()
-                    current_transcriber["worker"] = None
                 while True:
                     try:
                         audio_queue.get_nowait()
                     except queue.Empty:
                         break
                 window.set_status("演奏模式 · 音频识别已暂停", False)
-            elif current_transcriber["worker"] is None:
-                start_transcriber(config.model)
+            else:
+                recognition_paused.clear()
+                with switch_lock:
+                    worker_missing = current_transcriber["worker"] is None
+                if worker_missing:
+                    start_transcriber(config.model)
 
         window.performance_mode_changed.connect(set_performance_mode)
         workers.append(capture)
@@ -262,7 +403,11 @@ def run(config: AppConfig) -> int:
             if stop:
                 stop()
         if not config.demo_mode:
-            transcriber = current_transcriber.get("worker")
+            recognition_paused.set()
+            with switch_lock:
+                current_transcriber["generation"] += 1
+                transcriber = current_transcriber.get("worker")
+                current_transcriber["worker"] = None
             if transcriber is not None:
                 transcriber.stop()
 

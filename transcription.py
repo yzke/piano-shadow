@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import queue
+import base64
+import json
+import os
+import subprocess
+import sys
 import threading
 import tempfile
 import wave
@@ -39,10 +44,166 @@ class TranscriptionWorker:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=2)
+        if self._thread and self._thread is not threading.current_thread():
+            # Model changes run on the background switch coordinator. Waiting
+            # for an in-flight ONNX inference is essential: loading Piano GPU
+            # while Basic Pitch still owns its model can exhaust process memory.
+            self._thread.join()
 
     def _run(self) -> None:
+        if self._run_external_basic_pitch():
+            return
+        if not self._stop.is_set():
+            self.on_status("Basic Pitch 桥接不可用 · 使用同进程兜底", True)
+            self._run_inprocess_fallback()
+
+    def _run_external_basic_pitch(self) -> bool:
+        local_app_data = Path(
+            os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")
+        )
+        if getattr(sys, "frozen", False):
+            python = local_app_data / "PianoShadow" / "venv" / "Scripts" / "python.exe"
+            bridge = (
+                Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+                / "basic_pitch_bridge.py"
+            )
+        else:
+            python = self._bridge_python_executable(Path(sys.executable))
+            bridge = Path(__file__).resolve().with_name("basic_pitch_bridge.py")
+        if not python.exists() or not bridge.exists():
+            return False
+        environment = os.environ.copy()
+        environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONUTF8"] = "1"
+        try:
+            process = subprocess.Popen(
+                [
+                    str(python),
+                    "-u",
+                    str(bridge),
+                    "--sample-rate",
+                    str(self.config.sample_rate),
+                    "--chunk-seconds",
+                    str(self.config.chunk_seconds),
+                    "--min-amp",
+                    str(self.config.min_amp),
+                    "--min-confidence",
+                    str(self.config.min_confidence),
+                    "--min-velocity",
+                    str(self.config.min_velocity),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=False,
+                env=environment,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            self.on_status(f"Basic Pitch 桥接启动失败（{exc}）", True)
+            return False
+
+        bridge_failed = threading.Event()
+        ready_seen = threading.Event()
+
+        def read_results() -> None:
+            assert process.stdout is not None
+            try:
+                for raw_line in process.stdout:
+                    line = raw_line.decode("utf-8", errors="ignore")
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        # Some model stacks print warnings during import. The
+                        # bridge protocol is JSON-only, but noisy third-party
+                        # output should not kill the listener or freeze model
+                        # switching.
+                        continue
+                    kind = message.get("type")
+                    if kind == "ready":
+                        ready_seen.set()
+                        self.on_status("Listening · Basic Pitch ready", False)
+                    elif kind == "status":
+                        self.on_status(str(message.get("message", "Listening")), False)
+                    elif kind == "notes":
+                        notes = [
+                            NoteEvent(
+                                midi=int(note["midi"]),
+                                start=float(note["start"]),
+                                end=float(note["end"]),
+                                velocity=int(note["velocity"]),
+                                confidence=float(note["confidence"]),
+                            )
+                            for note in message.get("notes", [])
+                        ]
+                        if notes:
+                            self.on_notes(notes)
+                    elif kind == "warning":
+                        self.on_status(str(message.get("message", "Basic Pitch 警告")), True)
+                    elif kind == "error":
+                        bridge_failed.set()
+                        self.on_status(str(message.get("message", "Basic Pitch 错误")), True)
+            except Exception as exc:
+                if not self._stop.is_set():
+                    bridge_failed.set()
+                    self.on_status(f"Basic Pitch 桥接通信失败（{exc}）", True)
+
+        reader = threading.Thread(
+            target=read_results, name="basic-pitch-bridge-results", daemon=True
+        )
+        reader.start()
+        self.on_status("Loading · Basic Pitch 独立进程", False)
+        try:
+            assert process.stdin is not None
+            while not self._stop.is_set() and process.poll() is None:
+                if bridge_failed.is_set() and not ready_seen.is_set():
+                    return False
+                try:
+                    chunk = self.input.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                chunks = [chunk]
+                while True:
+                    try:
+                        chunks.append(self.input.get_nowait())
+                    except queue.Empty:
+                        break
+                audio = np.ascontiguousarray(np.concatenate(chunks), dtype="<f4")
+                payload = base64.b64encode(audio.tobytes()).decode("ascii")
+                process.stdin.write(
+                    (json.dumps({"type": "audio", "audio": payload}) + "\n").encode(
+                        "utf-8"
+                    )
+                )
+                process.stdin.flush()
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.on_status(f"Basic Pitch 音频传输失败（{exc}）", True)
+        finally:
+            if process.poll() is None:
+                try:
+                    if process.stdin:
+                        process.stdin.write(b'{"type":"stop"}\n')
+                        process.stdin.flush()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+            reader.join(timeout=1)
+        return self._stop.is_set() or ready_seen.is_set()
+
+    @staticmethod
+    def _bridge_python_executable(executable: Path) -> Path:
+        """Use console Python for pipe-based bridges even if UI runs via pythonw."""
+        if executable.name.lower() == "pythonw.exe":
+            python = executable.with_name("python.exe")
+            if python.exists():
+                return python
+        return executable
+
+    def _run_inprocess_fallback(self) -> None:
         previous_logging_level = logging.root.manager.disable
         logging.disable(logging.WARNING)
         try:
@@ -99,7 +260,7 @@ class TranscriptionWorker:
                 )
             )
             if rms < self.config.min_amp:
-                self.on_status("Listening · 等待清晰的钢琴声…", False)
+                self.on_status("Listening · 等待清晰的旋律…", False)
                 continue
             try:
                 # The public Basic Pitch API consistently accepts file paths across
@@ -165,7 +326,7 @@ class TranscriptionWorker:
                 notes = suppress_weak_harmonics(notes)
                 if notes:
                     self.on_notes(notes)
-                    self.on_status("Listening · Piano detected", False)
+                    self.on_status("Listening · Melody detected", False)
             except Exception as exc:
                 self.on_status(f"转录暂时失败 · 将继续监听（{exc}）", True)
 

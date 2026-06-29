@@ -16,9 +16,11 @@ from pathlib import Path
 from PyQt6.QtCore import (
     QLineF,
     QPoint,
+    QPointF,
     QRect,
     QRectF,
     QSettings,
+    QSize,
     Qt,
     QTimer,
     QUrl,
@@ -62,6 +64,7 @@ from config import (
     SOUNDFONT_SHA256,
     SOUNDFONT_URLS,
 )
+from erhu_model import ErhuMapper, ErhuState, MAX_POSITION
 from note_model import (
     NoteEvent,
     PIANO_HIGH,
@@ -96,6 +99,10 @@ SOLFEGE_NAMES = (
     "Do", "Do♯", "Re", "Re♯", "Mi", "Fa",
     "Fa♯", "Sol", "Sol♯", "La", "La♯", "Si",
 )
+ERHU_D_JIANPU = (
+    "♭7", "7", "1", "♯1", "2", "♯2",
+    "3", "4", "♯4", "5", "♯5", "6",
+)
 
 
 @dataclass(slots=True)
@@ -105,6 +112,12 @@ class VisualNote:
     strength: float
     name: str
     lane: int
+
+
+@dataclass(slots=True)
+class ErhuTrail:
+    state: ErhuState
+    born: float
 
 
 class OverlayWindow(QWidget):
@@ -117,6 +130,7 @@ class OverlayWindow(QWidget):
     model_download_source_received = pyqtSignal(str)
     model_download_finished_received = pyqtSignal(bool, str)
     performance_mode_changed = pyqtSignal(bool)
+    visual_mode_changed = pyqtSignal(str)
     performance_note_received = pyqtSignal(int, int)
     performance_answer_received = pyqtSignal(int)
     soundfont_download_progress_received = pyqtSignal(int, int)
@@ -126,6 +140,16 @@ class OverlayWindow(QWidget):
         super().__init__()
         self.config = config
         self.visual_notes: list[VisualNote] = []
+        self._visual_mode = "piano"
+        self._erhu_mapper = ErhuMapper()
+        self._erhu_state: ErhuState | None = None
+        self._erhu_display_position = 0.0
+        self._erhu_target_position = 0.0
+        self._erhu_trails: list[ErhuTrail] = []
+        self._erhu_vertical = False
+        self._erhu_history = True
+        self._erhu_body = True
+        self._erhu_mirrored = False
         self.status_text = "Piano Shadow · Starting…"
         self.status_error = False
         self._drag_offset: QPoint | None = None
@@ -154,7 +178,6 @@ class OverlayWindow(QWidget):
         self._soundfont_download_thread: threading.Thread | None = None
         self._soundfont_download_cancel = threading.Event()
         self._soundfont_download_progress: QProgressDialog | None = None
-        self._show_status = True
         self._opacity = 0.85
         self._active_opacity = 0.85
         self._scale_percent = 100
@@ -230,6 +253,9 @@ class OverlayWindow(QWidget):
                 )
 
     def _display_notes(self, events: list[NoteEvent]) -> None:
+        if self._visual_mode == "erhu":
+            self._display_erhu_note(events)
+            return
         now = time.monotonic()
         # Show the strongest recent occurrence once per pitch.
         strongest: dict[int, NoteEvent] = {}
@@ -249,6 +275,23 @@ class OverlayWindow(QWidget):
         self.visual_notes = self.visual_notes[-40:]
         self.update()
 
+    def _display_erhu_note(self, events: list[NoteEvent]) -> None:
+        if not events:
+            return
+        # Erhu Shadow deliberately follows one melody note, not a chord.
+        event = max(events, key=lambda item: (item.confidence, item.velocity))
+        state = self._erhu_mapper.map(event.midi, event.confidence)
+        if state is None:
+            return
+        now = time.monotonic()
+        if self._erhu_state is None or self._erhu_state.string_name != state.string_name:
+            self._erhu_display_position = float(state.position)
+        self._erhu_state = state
+        self._erhu_target_position = float(state.position)
+        self._erhu_trails.append(ErhuTrail(state, now))
+        self._erhu_trails = self._erhu_trails[-12:]
+        self.update()
+
     def set_status(self, text: str, error: bool = False) -> None:
         self.status_text = text
         self.status_error = error
@@ -259,7 +302,18 @@ class OverlayWindow(QWidget):
         self.visual_notes = [
             n for n in self.visual_notes if now - n.born < self.config.decay_seconds * 1.35
         ]
-        if self.visual_notes:
+        erhu_trail_seconds = max(5.5, self.config.decay_seconds * 3.8)
+        self._erhu_trails = [
+            trail for trail in self._erhu_trails if now - trail.born < erhu_trail_seconds
+        ]
+        distance = self._erhu_target_position - self._erhu_display_position
+        if abs(distance) > 0.01:
+            # Frame-rate-independent-looking easing, fast enough to cross
+            # several positions while still reading as discrete movement.
+            self._erhu_display_position += distance * 0.22
+        else:
+            self._erhu_display_position = self._erhu_target_position
+        if self.visual_notes or self._erhu_trails or abs(distance) > 0.01:
             self.update()
 
     def _alpha(self, note: VisualNote, now: float) -> float:
@@ -280,6 +334,38 @@ class OverlayWindow(QWidget):
         saturation = max(0.0, min(1.0, saturation + register * 0.025))
         color.setHslF(hue, saturation, lightness, max(0, min(255, alpha)) / 255)
         return color
+
+    @classmethod
+    def _erhu_note_color(
+        cls,
+        midi: int,
+        string_name: str,
+        alpha: int = 255,
+    ) -> QColor:
+        """Preserve pitch hue while distinguishing lower/upper erhu strings."""
+        color = cls._note_color(midi, alpha)
+        hue, saturation, lightness, opacity = color.getHslF()
+        offset = 0.065 if string_name == "outer" else -0.055
+        color.setHslF(
+            hue,
+            saturation,
+            max(0.0, min(1.0, lightness + offset)),
+            opacity,
+        )
+        return color
+
+    @staticmethod
+    def _erhu_history_alpha(index: int) -> int:
+        """Newest historical erhu note is half opacity; each older note halves again."""
+        if index < 0:
+            return 0
+        return max(0, min(255, round(128 * (0.5**index))))
+
+    @staticmethod
+    def _erhu_history_diameter(index: int) -> float:
+        if index < 0:
+            return 0.0
+        return max(9.0, 13.5 - index * 0.75)
 
     def _keyboard_geometry(self) -> tuple[dict[int, QRectF], dict[int, QRectF]]:
         margin = 20.0
@@ -308,15 +394,20 @@ class OverlayWindow(QWidget):
         if not self._keyboard_only:
             self._draw_glass(painter)
             self._draw_status(painter)
-            self._draw_settings(painter)
         if self._performance_mode:
             self._draw_performance_status(painter)
             self._draw_ear_feedback(painter)
-        self._draw_pitch_legend(painter)
+        if self._visual_mode == "piano":
+            self._draw_pitch_legend(painter)
+        else:
+            self._draw_erhu_legend(painter)
         self._draw_controls(painter)
-        white, black = self._keyboard_geometry()
-        self._draw_note_labels(painter, now, white, black)
-        self._draw_keyboard(painter, white, black, now)
+        if self._visual_mode == "erhu":
+            self._draw_erhu(painter, now)
+        else:
+            white, black = self._keyboard_geometry()
+            self._draw_note_labels(painter, now, white, black)
+            self._draw_keyboard(painter, white, black, now)
 
     def _draw_glass(self, p: QPainter) -> None:
         p.save()
@@ -350,23 +441,6 @@ class OverlayWindow(QWidget):
         p.setPen(QPen(color))
         p.drawText(pill.adjusted(14, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter, text)
 
-    def _draw_settings(self, p: QPainter) -> None:
-        if not self._show_status or self.width() < 700:
-            return
-        text = (
-            f"CHUNK {self.config.chunk_seconds:g}s   "
-            f"DECAY {self.config.decay_seconds:g}s   "
-            f"AMP {self.config.min_amp:g}"
-        )
-        font = QFont("Inter, Arial, sans-serif", 7)
-        p.setFont(font)
-        p.setPen(QColor(176, 197, 218, 125))
-        p.drawText(
-            QRectF(self.width() * 0.30, 17, self.width() * 0.28, 24),
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            text,
-        )
-
     def _draw_pitch_legend(self, p: QPainter) -> None:
         controls = self._control_rects()
         control_left = min(rect.left() for rect in controls.values())
@@ -393,15 +467,309 @@ class OverlayWindow(QWidget):
             p.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, name)
         p.restore()
 
+    def _draw_erhu_legend(self, p: QPainter) -> None:
+        degrees = ("1", "2", "3", "4", "5", "6", "7")
+        pitch_classes = (2, 4, 6, 7, 9, 11, 1)  # D major
+        p.save()
+        p.setOpacity(self._active_opacity)
+        font = QFont(
+            "Inter, Noto Sans CJK SC, sans-serif",
+            max(7, round(min(self.width(), self.height()) * 0.046)),
+        )
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        if self._erhu_vertical:
+            x = 17.0
+            start_y = max(315.0, self.height() * 0.36)
+            for index, (degree, pitch_class) in enumerate(
+                zip(degrees, pitch_classes)
+            ):
+                rect = QRectF(x, start_y + index * 27.0, 22, 20)
+                p.setPen(self._note_color(60 + pitch_class, 230))
+                p.drawText(rect, Qt.AlignmentFlag.AlignCenter, degree)
+        else:
+            controls = self._control_rects()
+            control_left = min(rect.left() for rect in controls.values())
+            item_width = 20.0
+            gap = 4.0
+            total = len(degrees) * item_width + (len(degrees) - 1) * gap
+            start_x = control_left - total - 12.0
+            if start_x >= 8:
+                for index, (degree, pitch_class) in enumerate(
+                    zip(degrees, pitch_classes)
+                ):
+                    rect = QRectF(
+                        start_x + index * (item_width + gap),
+                        17,
+                        item_width,
+                        20,
+                    )
+                    p.setPen(self._note_color(60 + pitch_class, 230))
+                    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, degree)
+        p.restore()
+
+    def _draw_erhu_body(
+        self,
+        p: QPainter,
+        *,
+        vertical: bool,
+        left: float | None = None,
+        right: float | None = None,
+        bottom: float | None = None,
+        string_axis: dict[str, float],
+    ) -> None:
+        """Draw a subtle rounded resonator hint behind the erhu strings."""
+        rect = self._erhu_body_rect(
+            vertical=vertical,
+            left=left,
+            right=right,
+            bottom=bottom,
+            string_axis=string_axis,
+        )
+        if vertical:
+            highlight = QLineF(
+                rect.left() + 16.0,
+                rect.top() + 12.0,
+                rect.right() - 16.0,
+                rect.top() + 12.0,
+            )
+            inner_line = QLineF(
+                rect.left() + 20.0,
+                rect.bottom() - 12.0,
+                rect.right() - 20.0,
+                rect.bottom() - 12.0,
+            )
+        else:
+            highlight = QLineF(
+                rect.left() + 20.0,
+                rect.top() + 12.0,
+                rect.right() - 20.0,
+                rect.top() + 12.0,
+            )
+            inner_line = QLineF(
+                rect.left() + 24.0,
+                rect.bottom() - 12.0,
+                rect.right() - 24.0,
+                rect.bottom() - 12.0,
+            )
+
+        radius = min(rect.width(), rect.height()) * 0.32
+        body = QPainterPath()
+        body.addRoundedRect(rect, radius, radius)
+        fill = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        fill.setColorAt(0.0, QColor(205, 139, 76, 128))
+        fill.setColorAt(0.42, QColor(126, 72, 38, 150))
+        fill.setColorAt(1.0, QColor(46, 24, 15, 180))
+
+        p.save()
+        p.setOpacity(max(0.78, self._opacity * 0.98))
+        p.setPen(QPen(QColor(25, 10, 4, 122), 3.2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(body)
+        p.setPen(QPen(QColor(244, 188, 118, 132), 1.1))
+        p.setBrush(fill)
+        p.drawPath(body)
+        p.setPen(QPen(QColor(255, 218, 156, 112), 0.9))
+        p.drawLine(highlight)
+        p.setPen(QPen(QColor(28, 11, 5, 122), 0.95))
+        p.drawLine(inner_line)
+        p.restore()
+
+    def _draw_erhu_top_bars(
+        self,
+        p: QPainter,
+        *,
+        top: float,
+        string_axis: dict[str, float],
+    ) -> None:
+        """Draw the two subtle upper erhu pegs/bars in vertical mode."""
+        bars = self._erhu_top_bar_rects(
+            top=top,
+            string_axis=string_axis,
+            mirrored=self._erhu_mirrored,
+        )
+
+        p.save()
+        p.setOpacity(max(0.74, self._opacity * 0.94))
+        for index, rect in enumerate(bars):
+            fill = QLinearGradient(rect.topLeft(), rect.bottomRight())
+            fill.setColorAt(0.0, QColor(218, 150, 82, 118 - index * 10))
+            fill.setColorAt(0.45, QColor(129, 73, 38, 142 - index * 10))
+            fill.setColorAt(1.0, QColor(47, 24, 13, 170 - index * 10))
+            wide = rect.height()
+            narrow = max(4.2, rect.height() * 0.58)
+            left_height = narrow if self._erhu_mirrored else wide
+            right_height = wide if self._erhu_mirrored else narrow
+            left_mid = rect.center().y()
+            right_mid = rect.center().y()
+            shape = QPainterPath()
+            shape.moveTo(rect.left(), left_mid - left_height / 2)
+            shape.lineTo(rect.right(), right_mid - right_height / 2)
+            shape.lineTo(rect.right(), right_mid + right_height / 2)
+            shape.lineTo(rect.left(), left_mid + left_height / 2)
+            shape.closeSubpath()
+            p.setPen(QPen(QColor(26, 10, 4, 112), 2.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(shape)
+            p.setPen(QPen(QColor(244, 190, 116, 118), 0.85))
+            p.setBrush(fill)
+            p.drawPath(shape)
+            p.setPen(QPen(QColor(255, 224, 166, 86), 0.7))
+            p.drawLine(
+                QLineF(
+                    rect.left() + 10.0,
+                    rect.center().y() - left_height * 0.20,
+                    rect.right() - 10.0,
+                    rect.center().y() - right_height * 0.20,
+                )
+            )
+        p.restore()
+
+    @staticmethod
+    def _erhu_top_bar_rects(
+        *,
+        top: float,
+        string_axis: dict[str, float],
+        mirrored: bool = False,
+    ) -> tuple[QRectF, QRectF]:
+        inner_axis = string_axis["inner"]
+        outer_axis = string_axis["outer"]
+        low = min(inner_axis, outer_axis)
+        high = max(inner_axis, outer_axis)
+        long_side = 48.0
+        short_side = 24.0
+        left = low - (short_side if mirrored else long_side)
+        right = high + (long_side if mirrored else short_side)
+        width = right - left
+        return (
+            QRectF(left, top + 8.0, width, 8.5),
+            QRectF(left + 9.0, top + 46.0, width - 18.0, 7.5),
+        )
+
+    def _erhu_vertical_string_axis(self) -> dict[str, float]:
+        if self._erhu_body:
+            inner_x = self.width() * 0.49
+            outer_x = self.width() * 0.62
+            normal_center = (inner_x + outer_x) / 2
+            # Keep the resonator fixed as the visual anchor. In the default
+            # view the string pair sits slightly right of the resonator center;
+            # mirror mode places the pair the same distance to the left.
+            body_left = inner_x - 74.0
+            body_width = outer_x - inner_x + 74.0 + 26.0
+            body_center = body_left + body_width / 2
+            mirrored_center = body_center - (normal_center - body_center)
+            string_gap = outer_x - inner_x
+            mirrored_outer_x = mirrored_center - string_gap / 2
+            mirrored_inner_x = mirrored_center + string_gap / 2
+        else:
+            inner_x = self.width() * 0.36
+            outer_x = self.width() * 0.62
+            mirrored_inner_x = outer_x
+            mirrored_outer_x = inner_x
+        if self._erhu_mirrored:
+            return {"inner": mirrored_inner_x, "outer": mirrored_outer_x}
+        return {"inner": inner_x, "outer": outer_x}
+
+    def _erhu_horizontal_string_axis(self) -> dict[str, float]:
+        normal_axis = {
+            "inner": self.height() * 0.58,
+            "outer": self.height() * 0.75,
+        }
+        if self._erhu_mirrored:
+            return {"inner": normal_axis["outer"], "outer": normal_axis["inner"]}
+        return normal_axis
+
+    def _erhu_vertical_label_rects(
+        self,
+        *,
+        top: float,
+        string_axis: dict[str, float],
+    ) -> dict[str, QRectF]:
+        label_width = min(108.0, max(78.0, self.width() * 0.25))
+        margin = 6.0
+        label_y = top - 23.0
+
+        def rect_for(axis: float) -> QRectF:
+            left = max(
+                margin,
+                min(self.width() - label_width - margin, axis - label_width / 2),
+            )
+            return QRectF(left, label_y, label_width, 18.0)
+
+        inner = rect_for(string_axis["inner"])
+        outer = rect_for(string_axis["outer"])
+        if inner.intersects(outer.adjusted(-4, 0, 4, 0)):
+            ordered = sorted(
+                ("inner", "outer"),
+                key=lambda name: string_axis[name],
+            )
+            gap = 4.0
+            left_rect = QRectF(
+                max(margin, min(inner.left(), outer.left())),
+                label_y,
+                label_width,
+                18.0,
+            )
+            right_rect = QRectF(
+                min(
+                    self.width() - label_width - margin,
+                    left_rect.right() + gap,
+                ),
+                label_y,
+                label_width,
+                18.0,
+            )
+            if right_rect.left() <= left_rect.right():
+                left_rect.moveLeft(max(margin, right_rect.left() - label_width - gap))
+            return {ordered[0]: left_rect, ordered[1]: right_rect}
+        return {"inner": inner, "outer": outer}
+
+    def _erhu_body_rect(
+        self,
+        *,
+        vertical: bool,
+        left: float | None = None,
+        right: float | None = None,
+        bottom: float | None = None,
+        string_axis: dict[str, float],
+    ) -> QRectF:
+        """Geometry for the erhu resonator, aligned from the string axes."""
+        if vertical:
+            if self._erhu_body:
+                # Keep the resonator as the visual anchor. Mirror mode moves
+                # strings/pegs around it; the body itself should not drift.
+                inner_axis = self.width() * 0.49
+                outer_axis = self.width() * 0.62
+            else:
+                inner_axis = string_axis["inner"]
+                outer_axis = string_axis["outer"]
+            left_padding = 74.0
+            right_padding = 26.0
+            low = min(inner_axis, outer_axis)
+            high = max(inner_axis, outer_axis)
+            body_width = abs(high - low) + left_padding + right_padding
+            body_height = 70.0
+            rect_left = low - left_padding
+            rect_top = (bottom or self.height()) - body_height + 5.0
+            return QRectF(rect_left, rect_top, body_width, body_height)
+
+        inner_axis = string_axis["inner"]
+        outer_axis = string_axis["outer"]
+        padding_y = 16.0
+        body_width = 134.0
+        body_height = abs(outer_axis - inner_axis) + padding_y * 2
+        rect_left = (right or self.width()) - body_width - 18.0
+        rect_top = min(inner_axis, outer_axis) - padding_y
+        return QRectF(rect_left, rect_top, body_width, body_height)
+
     def _control_rects(self) -> dict[str, QRectF]:
         size = max(21.0, min(27.0, self.height() * 0.17))
         gap = 5.0
         if self._keyboard_only:
             return {"lock": QRectF(self.width() - 20.0 - size, 16.0, size, size)}
         primary = (
-            "performance",
+            "visual_mode",
             "minimal",
-            "model",
             "lock",
             "top",
             "smaller",
@@ -409,13 +777,45 @@ class OverlayWindow(QWidget):
             "keyboard_opacity",
             "active_opacity",
         )
+        if self._visual_mode == "erhu" and self._erhu_vertical:
+            x = self.width() - 16.0 - size
+            controls = {
+                name: QRectF(x, 16.0 + index * (size + gap), size, size)
+                for index, name in enumerate(primary)
+            }
+            controls["erhu_rotate"] = QRectF(
+                x, 16.0 + len(primary) * (size + gap), size, size
+            )
+            controls["erhu_history"] = QRectF(
+                x, 16.0 + (len(primary) + 1) * (size + gap), size, size
+            )
+            controls["erhu_body"] = QRectF(
+                x, 16.0 + (len(primary) + 2) * (size + gap), size, size
+            )
+            controls["erhu_mirror"] = QRectF(
+                x, 16.0 + (len(primary) + 3) * (size + gap), size, size
+            )
+            return controls
         start = self.width() - 20.0 - len(primary) * size - (len(primary) - 1) * gap
         controls = {
             name: QRectF(start + index * (size + gap), 16.0, size, size)
             for index, name in enumerate(primary)
         }
-        if self._performance_mode:
+        secondary: tuple[tuple[str, float], ...]
+        if self._visual_mode == "erhu":
             secondary = (
+                ("erhu_rotate", size),
+                ("erhu_history", size),
+                ("erhu_body", size),
+                ("erhu_mirror", size),
+            )
+        else:
+            secondary = (
+                ("performance", size),
+                ("piano_model", size),
+            )
+        if self._performance_mode:
+            secondary += (
                 ("input_mode", size),
                 ("performance_help", size),
                 ("ear_training", size),
@@ -425,6 +825,7 @@ class OverlayWindow(QWidget):
                 ("instrument_reset", size),
                 ("soundfont_manage", size),
             )
+        if secondary:
             total_width = (
                 sum(width for _name, width in secondary)
                 + (len(secondary) - 1) * gap
@@ -594,10 +995,16 @@ class OverlayWindow(QWidget):
         p.save()
         for name, rect in self._control_rects().items():
             p.save()
+            enabled = self._control_enabled(name)
             active = (
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
-                or (name == "model" and self.config.model == "piano-gpu")
+                or (name == "piano_model" and self.config.model == "piano-gpu")
+                or (name == "erhu_rotate" and self._erhu_vertical)
+                or (name == "erhu_history" and self._erhu_history)
+                or (name == "erhu_body" and self._erhu_body)
+                or (name == "erhu_mirror" and self._erhu_mirrored)
+                or (name == "visual_mode" and self._visual_mode == "erhu")
                 or (name == "performance_help" and self._performance_help)
                 or (
                     name == "ear_training"
@@ -615,12 +1022,25 @@ class OverlayWindow(QWidget):
                     and self._performance.sound_source == "soundfont"
                 )
             )
-            p.setPen(QPen(QColor(132, 208, 246, 105) if active else QColor(255, 255, 255, 25)))
-            p.setBrush(QColor(61, 139, 186, 90) if active else QColor(19, 29, 45, 155))
+            if enabled:
+                p.setPen(QPen(QColor(132, 208, 246, 105) if active else QColor(255, 255, 255, 25)))
+                p.setBrush(QColor(61, 139, 186, 90) if active else QColor(19, 29, 45, 155))
+            else:
+                p.setPen(QPen(QColor(255, 255, 255, 18)))
+                p.setBrush(QColor(13, 20, 31, 92))
             p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+            if not enabled:
+                p.setOpacity(0.45)
             self._draw_control_icon(p, name, rect)
             p.restore()
         p.restore()
+
+    def _control_enabled(self, name: str) -> bool:
+        if name == "erhu_body":
+            return self._visual_mode == "erhu" and self._erhu_vertical
+        if name == "erhu_mirror":
+            return self._visual_mode == "erhu"
+        return True
 
     def _draw_control_icon(self, p: QPainter, name: str, rect: QRectF) -> None:
         cx, cy = rect.center().x(), rect.center().y()
@@ -651,6 +1071,18 @@ class OverlayWindow(QWidget):
                 p.drawRoundedRect(key, unit * 0.25, unit * 0.25)
             p.drawLine(
                 QLineF(cx - 2.45 * unit, cy + 2.35 * unit, cx + 2.45 * unit, cy + 2.35 * unit)
+            )
+        elif name == "visual_mode":
+            font = QFont(
+                "Inter, Noto Sans CJK SC, sans-serif",
+                max(8, round(unit * 2.25)),
+            )
+            font.setWeight(QFont.Weight.Bold)
+            p.setFont(font)
+            p.drawText(
+                rect,
+                Qt.AlignmentFlag.AlignCenter,
+                "胡" if self._visual_mode == "erhu" else "钢",
             )
         elif name == "performance_help":
             font = QFont("Inter, Arial, sans-serif", max(8, round(unit * 2.4)))
@@ -757,12 +1189,56 @@ class OverlayWindow(QWidget):
                     unit * 0.35,
                 )
                 p.drawLine(QLineF(cx - 1.6 * unit, cy + 0.4 * unit, cx + 1.6 * unit, cy + 0.4 * unit))
-        elif name == "model":
+        elif name == "piano_model":
             chip = QRectF(cx - 2.15 * unit, cy - 1.75 * unit, 4.3 * unit, 3.5 * unit)
             p.drawRoundedRect(chip, unit * 0.45, unit * 0.45)
             for offset in (-1.25, 0, 1.25):
                 p.drawLine(QLineF(cx + offset * unit, cy - 2.45 * unit, cx + offset * unit, cy - 1.75 * unit))
                 p.drawLine(QLineF(cx + offset * unit, cy + 1.75 * unit, cx + offset * unit, cy + 2.45 * unit))
+        elif name == "erhu_rotate":
+            p.drawLine(
+                QLineF(cx - 2.2 * unit, cy - 1.5 * unit, cx + 1.7 * unit, cy - 1.5 * unit)
+            )
+            p.drawLine(
+                QLineF(cx + 1.7 * unit, cy - 1.5 * unit, cx + 1.7 * unit, cy + 1.2 * unit)
+            )
+            p.drawLine(
+                QLineF(cx + 1.7 * unit, cy + 1.2 * unit, cx + 0.5 * unit, cy + 0.1 * unit)
+            )
+            p.drawLine(
+                QLineF(cx + 1.7 * unit, cy + 1.2 * unit, cx + 2.7 * unit, cy + 0.1 * unit)
+            )
+        elif name == "erhu_history":
+            for index, radius in enumerate((0.7, 1.15, 1.6)):
+                color = QColor(205, 233, 249, 225 - index * 62)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(color)
+                x = cx - 1.7 * unit + index * 1.7 * unit
+                p.drawEllipse(
+                    QRectF(
+                        x - radius * unit / 2,
+                        cy - radius * unit / 2,
+                        radius * unit,
+                        radius * unit,
+                    )
+                )
+        elif name == "erhu_body":
+            body = QRectF(cx - 2.25 * unit, cy - 1.65 * unit, 4.5 * unit, 3.3 * unit)
+            p.setPen(QPen(QColor(205, 233, 249, 220), max(1.0, unit * 0.38)))
+            p.setBrush(QColor(205, 233, 249, 35))
+            p.drawRoundedRect(body, 0.75 * unit, 0.75 * unit)
+            p.drawLine(QLineF(cx - 1.35 * unit, cy - 0.45 * unit, cx + 1.35 * unit, cy - 0.45 * unit))
+            p.drawLine(QLineF(cx - 1.0 * unit, cy + 0.55 * unit, cx + 1.0 * unit, cy + 0.55 * unit))
+        elif name == "erhu_mirror":
+            p.drawLine(QLineF(cx, cy - 2.5 * unit, cx, cy + 2.5 * unit))
+            p.drawLine(QLineF(cx - 2.6 * unit, cy - 1.0 * unit, cx - 0.55 * unit, cy - 1.0 * unit))
+            p.drawLine(QLineF(cx - 2.6 * unit, cy + 1.0 * unit, cx - 0.55 * unit, cy + 1.0 * unit))
+            p.drawLine(QLineF(cx + 0.55 * unit, cy - 1.0 * unit, cx + 2.6 * unit, cy - 1.0 * unit))
+            p.drawLine(QLineF(cx + 0.55 * unit, cy + 1.0 * unit, cx + 2.6 * unit, cy + 1.0 * unit))
+            p.drawLine(QLineF(cx - 2.6 * unit, cy - 1.0 * unit, cx - 1.8 * unit, cy - 1.8 * unit))
+            p.drawLine(QLineF(cx - 2.6 * unit, cy - 1.0 * unit, cx - 1.8 * unit, cy - 0.2 * unit))
+            p.drawLine(QLineF(cx + 2.6 * unit, cy + 1.0 * unit, cx + 1.8 * unit, cy + 0.2 * unit))
+            p.drawLine(QLineF(cx + 2.6 * unit, cy + 1.0 * unit, cx + 1.8 * unit, cy + 1.8 * unit))
         elif name == "lock":
             p.drawRoundedRect(
                 QRectF(cx - 2.1 * unit, cy - 0.2 * unit, 4.2 * unit, 3.1 * unit),
@@ -970,6 +1446,257 @@ class OverlayWindow(QWidget):
         self._draw_active_center_glows(p, white, black, active)
         self._draw_active_key_edges(p, white, black, active)
 
+    def _draw_erhu(self, p: QPainter, now: float) -> None:
+        """Draw two pitch-position guides while preserving the overlay controls."""
+        labels = {"inner": "内弦 D", "outer": "外弦 A"}
+        vertical = self._erhu_vertical
+        if vertical:
+            top = 88.0
+            body_bottom = self.height() - 17.0
+            string_axis = self._erhu_vertical_string_axis()
+            body_rect = (
+                self._erhu_body_rect(
+                    vertical=True,
+                    bottom=body_bottom,
+                    string_axis=string_axis,
+                )
+                if self._erhu_body
+                else None
+            )
+            bottom = (
+                body_rect.top() - 5.0
+                if body_rect is not None
+                else body_bottom
+            )
+            usable = max(1.0, bottom - top)
+
+            def point(string_name: str, position: float) -> tuple[float, float]:
+                return (
+                    string_axis[string_name],
+                    bottom - position / MAX_POSITION * usable,
+                )
+        else:
+            left = 96.0
+            right = self.width() - 32.0
+            usable = max(1.0, right - left)
+            string_axis = self._erhu_horizontal_string_axis()
+
+            def point(string_name: str, position: float) -> tuple[float, float]:
+                return (
+                    left + position / MAX_POSITION * usable,
+                    string_axis[string_name],
+                )
+
+        if self._erhu_vertical and self._erhu_body:
+            self._draw_erhu_body(
+                p,
+                vertical=vertical,
+                left=left if not vertical else None,
+                right=right if not vertical else None,
+                bottom=body_bottom if vertical else None,
+                string_axis=string_axis,
+            )
+
+        if vertical and self._erhu_body:
+            self._draw_erhu_top_bars(p, top=top, string_axis=string_axis)
+
+        p.save()
+        # Structural guides must remain readable over pale wallpapers even
+        # when the user lowers the glass/keyboard opacity.
+        p.setOpacity(max(0.72, self._opacity))
+        p.setFont(QFont("Inter, Noto Sans CJK SC, sans-serif", 8))
+        vertical_label_rects = (
+            self._erhu_vertical_label_rects(top=top, string_axis=string_axis)
+            if vertical
+            else {}
+        )
+        for string_name, axis in string_axis.items():
+            selected = (
+                self._erhu_state is not None
+                and self._erhu_state.string_name == string_name
+            )
+            if selected:
+                string_color = self._erhu_note_color(
+                    self._erhu_state.midi, string_name, 235
+                )
+                shadow_color = QColor(8, 16, 27, 175)
+                width = 2.35
+            else:
+                base_string = QColor(151, 181, 203, 230)
+                string_color = (
+                    base_string.lighter(118)
+                    if string_name == "outer"
+                    else base_string.darker(118)
+                )
+                shadow_color = QColor(7, 13, 23, 195)
+                width = 1.45
+            if vertical:
+                p.setPen(QPen(shadow_color, width + 2.2))
+                p.drawLine(QLineF(axis, top, axis, bottom))
+                p.setPen(QPen(string_color, width))
+                p.drawLine(QLineF(axis, top, axis, bottom))
+                label_color = (
+                    QColor(224, 238, 248, 225)
+                    if string_name == "outer"
+                    else QColor(165, 190, 209, 220)
+                )
+                p.setPen(label_color)
+                p.drawText(
+                    vertical_label_rects[string_name],
+                    Qt.AlignmentFlag.AlignCenter,
+                    labels[string_name],
+                )
+            else:
+                p.setPen(QPen(shadow_color, width + 2.2))
+                p.drawLine(QLineF(left, axis, right, axis))
+                p.setPen(QPen(string_color, width))
+                p.drawLine(QLineF(left, axis, right, axis))
+                label_color = (
+                    QColor(224, 238, 248, 225)
+                    if string_name == "outer"
+                    else QColor(165, 190, 209, 220)
+                )
+                p.setPen(label_color)
+                p.drawText(
+                    QRectF(20, axis - 11, 67, 22),
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    labels[string_name],
+                )
+            for position in range(MAX_POSITION + 1):
+                x, y = point(string_name, position)
+                length = 5.0 if position % 3 else 8.0
+                tick_color = (
+                    QColor(220, 239, 250, 145)
+                    if string_name == "outer"
+                    else QColor(139, 169, 190, 135)
+                )
+                p.setPen(QPen(tick_color, 0.8))
+                if vertical:
+                    p.drawLine(QLineF(x - length / 2, y, x + length / 2, y))
+                else:
+                    p.drawLine(QLineF(x, y - length / 2, x, y + length / 2))
+        p.restore()
+
+        if self._erhu_history:
+            # The active note is drawn below as the main glowing point. Historical
+            # notes are the previous notes only: newest previous note is 50%
+            # opacity, then each older note halves again.
+            for index, trail in enumerate(reversed(self._erhu_trails[:-1])):
+                alpha = self._erhu_history_alpha(index)
+                if alpha < 8:
+                    continue
+                state = trail.state
+                x, y = point(state.string_name, state.position)
+                p.save()
+                p.setOpacity(self._active_opacity)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(self._erhu_note_color(state.midi, state.string_name, alpha))
+                diameter = self._erhu_history_diameter(index)
+                p.drawEllipse(
+                    QRectF(
+                        x - diameter / 2,
+                        y - diameter / 2,
+                        diameter,
+                        diameter,
+                    )
+                )
+                p.restore()
+
+        newest_trail = self._erhu_trails[-1] if self._erhu_trails else None
+        for trail in self._erhu_trails:
+            age = now - trail.born
+            if age >= 0.42:
+                continue
+            state = trail.state
+            if trail is newest_trail:
+                onset_delay = 0.055
+                if age < onset_delay:
+                    continue
+                x, y = point(state.string_name, self._erhu_display_position)
+                progress = max(0.0, (age - onset_delay) / 0.42)
+            else:
+                x, y = point(state.string_name, state.position)
+                progress = max(0.0, age / 0.42)
+            radius = 9.0 + progress * 25.0
+            ring = self._erhu_note_color(
+                state.midi,
+                state.string_name,
+                round(205 * (1.0 - progress)),
+            )
+            p.save()
+            p.setOpacity(self._active_opacity)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(ring, max(0.7, 2.1 * (1.0 - progress))))
+            p.drawEllipse(
+                QRectF(
+                    x - radius,
+                    y - radius,
+                    radius * 2,
+                    radius * 2,
+                )
+            )
+            p.restore()
+
+        state = self._erhu_state
+        if state is None:
+            p.setFont(QFont("Inter, Noto Sans CJK SC, sans-serif", 9))
+            p.setPen(QColor(185, 205, 222, 135))
+            p.drawText(
+                QRectF(90, self.height() * 0.39, self.width() - 180, 24),
+                Qt.AlignmentFlag.AlignCenter,
+                "Erhu Shadow · 等待主旋律",
+            )
+            return
+        x, y = point(state.string_name, self._erhu_display_position)
+        color = self._erhu_note_color(state.midi, state.string_name)
+        p.save()
+        p.setOpacity(self._active_opacity)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        glow = QRadialGradient(QPointF(x, y), 31.0)
+        glow.setColorAt(
+            0, self._erhu_note_color(state.midi, state.string_name, 210)
+        )
+        glow.setColorAt(
+            0.35, self._erhu_note_color(state.midi, state.string_name, 95)
+        )
+        glow.setColorAt(
+            1, self._erhu_note_color(state.midi, state.string_name, 0)
+        )
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(glow)
+        p.drawEllipse(QRectF(x - 31, y - 31, 62, 62))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+        p.setBrush(color)
+        p.setPen(QPen(color.lighter(145), 1.2))
+        p.drawEllipse(QRectF(x - 7.5, y - 7.5, 15, 15))
+        p.restore()
+
+        chinese_string = "内弦" if state.string_name == "inner" else "外弦"
+        jianpu = ERHU_D_JIANPU[state.midi % 12]
+        p.save()
+        p.setOpacity(self._active_opacity)
+        name_font = QFont("Inter, Noto Sans CJK SC, sans-serif", 13)
+        name_font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(name_font)
+        p.setPen(color)
+        if vertical:
+            controls = self._control_rects()
+            control_left = min(rect.left() for rect in controls.values())
+            note_rect = QRectF(18, 124, max(120.0, control_left - 28.0), 26)
+            note_align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        else:
+            note_rect = QRectF(96, self.height() * 0.39, self.width() - 128, 24)
+            note_align = Qt.AlignmentFlag.AlignCenter
+        p.drawText(
+            note_rect,
+            note_align,
+            (
+                f"{state.note_name}  ·  {chinese_string} {state.position}"
+                f"  ·  D调 {jianpu}"
+            ),
+        )
+        p.restore()
+
     def _active_key_opacity(self) -> float:
         return self._active_opacity
 
@@ -1095,6 +1822,9 @@ class OverlayWindow(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             control = self._control_at(event.position())
             if control:
+                if not self._control_enabled(control):
+                    event.accept()
+                    return
                 self._activate_control(control)
                 event.accept()
                 return
@@ -1525,7 +2255,15 @@ class OverlayWindow(QWidget):
 
     def _activate_control(self, name: str) -> None:
         if name == "performance":
+            if self._visual_mode != "piano":
+                self.set_status("演奏模式仅在钢琴模式中提供", False)
+                self.update()
+                return
             self._toggle_performance_mode(not self._performance_mode)
+        elif name == "visual_mode":
+            self._set_visual_mode(
+                "piano" if self._visual_mode == "erhu" else "erhu"
+            )
         elif name == "performance_help":
             self._performance_help = not self._performance_help
         elif name == "ear_training":
@@ -1544,13 +2282,32 @@ class OverlayWindow(QWidget):
             self._show_soundfont_manager()
         elif name == "minimal":
             self._toggle_keyboard_only(True)
-        elif name == "model":
+        elif name == "piano_model":
             next_model = (
                 "basic-pitch"
                 if self.config.model == "piano-gpu"
                 else "piano-gpu"
             )
             self._select_model(next_model)
+        elif name == "erhu_rotate":
+            self._set_erhu_orientation(not self._erhu_vertical)
+        elif name == "erhu_history":
+            self._erhu_history = not self._erhu_history
+            if not self._erhu_history:
+                self._erhu_trails.clear()
+            state = "开启" if self._erhu_history else "关闭"
+            self.set_status(f"二胡历史轨迹 · {state}", False)
+        elif name == "erhu_body":
+            if not self._erhu_vertical:
+                self.set_status("横向二胡不显示琴托", False)
+                return
+            self._erhu_body = not self._erhu_body
+            state = "显示" if self._erhu_body else "隐藏"
+            self.set_status(f"二胡结构件 · {state}", False)
+        elif name == "erhu_mirror":
+            self._erhu_mirrored = not self._erhu_mirrored
+            state = "镜像" if self._erhu_mirrored else "默认"
+            self.set_status(f"二胡视角 · {state}", False)
         elif name == "lock":
             if self._keyboard_only:
                 self._toggle_keyboard_only(False)
@@ -1655,8 +2412,6 @@ class OverlayWindow(QWidget):
         top.triggered.connect(self._toggle_topmost)
         locked = QAction("锁定位置", self, checkable=True, checked=self._position_locked)
         locked.triggered.connect(self._toggle_position_lock)
-        status = QAction("显示参数面板", self, checkable=True, checked=self._show_status)
-        status.triggered.connect(lambda checked: self._set_show_status(checked))
         minimal = QAction("纯键盘模式", self, checkable=True, checked=self._keyboard_only)
         minimal.triggered.connect(self._toggle_keyboard_only)
         performance = QAction(
@@ -1673,7 +2428,29 @@ class OverlayWindow(QWidget):
         menu.addAction(performance)
         menu.addAction(soundfont)
         menu.addSeparator()
+        visual_menu = menu.addMenu("可视化模式")
+        visual_group = QActionGroup(visual_menu)
+        visual_group.setExclusive(True)
+        for title, mode in (
+            ("钢琴模式", "piano"),
+            ("二胡模式 · Erhu Shadow", "erhu"),
+        ):
+            action = QAction(
+                title,
+                visual_menu,
+                checkable=True,
+                checked=self._visual_mode == mode,
+            )
+            action.triggered.connect(
+                lambda checked, selected=mode: checked
+                and self._set_visual_mode(selected)
+            )
+            visual_group.addAction(action)
+            visual_menu.addAction(action)
         model_menu = menu.addMenu("识别模型")
+        model_menu.setEnabled(self._visual_mode == "piano")
+        if self._visual_mode == "erhu":
+            model_menu.setTitle("识别模型 · 二胡固定 Basic Pitch")
         model_group = QActionGroup(model_menu)
         model_group.setExclusive(True)
         for title, model_name in (
@@ -1695,12 +2472,66 @@ class OverlayWindow(QWidget):
         menu.addAction(self._keyboard_opacity_action(menu))
         menu.addAction(self._active_opacity_action(menu))
         menu.addAction(self._size_action(menu))
-        menu.addAction(status)
         menu.addSeparator()
         menu.addAction(quit_action)
         menu.exec(position)
 
+    def _set_visual_mode(self, mode: str) -> None:
+        if mode not in {"piano", "erhu"} or mode == self._visual_mode:
+            return
+        if mode == "piano" and self._erhu_vertical:
+            self._set_erhu_orientation(False)
+        self._visual_mode = mode
+        self.visual_notes.clear()
+        self._erhu_trails.clear()
+        self._erhu_state = None
+        self._erhu_display_position = 0.0
+        self._erhu_target_position = 0.0
+        self._erhu_mapper.reset()
+        label = "钢琴模式" if mode == "piano" else "二胡模式 · Erhu Shadow"
+        target_model = "piano-gpu" if mode == "piano" else "basic-pitch"
+        model_label = "Piano GPU" if mode == "piano" else "Basic Pitch 主旋律"
+        was_performance = self._performance_mode
+        if mode == "erhu" and was_performance:
+            # Set the desired listener before leaving performance mode so the
+            # resume signal cannot briefly restart the piano model.
+            self.config.model = target_model
+            self._toggle_performance_mode(False)
+        self.set_status(f"{label} · 正在加载 {model_label}", False)
+        if self.config.model != target_model:
+            self.config.model = target_model
+            self.model_selected.emit(target_model)
+        elif not was_performance:
+            # The visual mode owns its model. Reasserting it also lets the
+            # controller recover if a previous worker stopped unexpectedly.
+            self.model_selected.emit(target_model)
+        self.visual_mode_changed.emit(mode)
+        self.update()
+
+    def _set_erhu_orientation(self, vertical: bool) -> None:
+        if vertical == self._erhu_vertical:
+            return
+        center = self.frameGeometry().center()
+        old_size = self.size()
+        self._erhu_vertical = vertical
+        if vertical:
+            self._erhu_body = True
+            self._erhu_mirrored = False
+        self.setFixedSize(QSize(old_size.height(), old_size.width()))
+        self.move(
+            center.x() - self.width() // 2,
+            center.y() - self.height() // 2,
+        )
+        orientation = "竖向" if vertical else "横向"
+        self.set_status(f"二胡弦 · {orientation}", False)
+        self.update()
+
     def _select_model(self, model_name: str) -> None:
+        if self._visual_mode == "erhu" and model_name != "basic-pitch":
+            self.set_status(
+                "二胡模式固定使用 Basic Pitch 主旋律模型", False
+            )
+            return
         if model_name == self.config.model:
             return
         if model_name == "piano-gpu":
@@ -1834,7 +2665,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.5.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.0"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -2030,7 +2861,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.5.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.0"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -2222,8 +3053,13 @@ class OverlayWindow(QWidget):
             return
         center = self.frameGeometry().center()
         self._scale_percent = percent
-        width = round(self.config.width * percent / 100)
-        height = round(self.config.height * percent / 100)
+        base_width, base_height = (
+            (self.config.height, self.config.width)
+            if self._erhu_vertical
+            else (self.config.width, self.config.height)
+        )
+        width = round(base_width * percent / 100)
+        height = round(base_height * percent / 100)
         self.setFixedSize(width, height)
         self.move(center.x() - width // 2, center.y() - height // 2)
         self.update()
@@ -2236,7 +3072,9 @@ class OverlayWindow(QWidget):
         self._active_opacity = max(
             0.30, min(1.0, float(settings.value("active_opacity", 0.85)))
         )
-        self._show_status = settings.value("show_status", True, type=bool)
+        # Visual mode intentionally starts from Piano on every launch. A
+        # previous Erhu session must not silently load the melody model.
+        self._visual_mode = "piano"
         self._scale_percent = max(
             60, min(160, int(settings.value("scale_percent", 100)))
         )
@@ -2257,9 +3095,7 @@ class OverlayWindow(QWidget):
                 for screen in QApplication.screens()
             ):
                 self.move(saved_position)
-        saved_model = str(settings.value("model", self.config.model))
-        if saved_model in {"basic-pitch", "piano-gpu"}:
-            self.config.model = saved_model
+        self.config.model = "piano-gpu"
         self._instrument_index = max(
             0,
             min(
@@ -2299,7 +3135,6 @@ class OverlayWindow(QWidget):
         settings.setValue("scale_percent", self._scale_percent)
         settings.setValue("keyboard_opacity", self._opacity)
         settings.setValue("active_opacity", self._active_opacity)
-        settings.setValue("model", self.config.model)
         settings.setValue(
             "performance_instrument", self._instrument_index
         )
@@ -2309,7 +3144,6 @@ class OverlayWindow(QWidget):
         settings.setValue("always_on_top", self._always_on_top)
         settings.setValue("position_locked", self._position_locked)
         settings.setValue("keyboard_only", self._keyboard_only)
-        settings.setValue("show_status", self._show_status)
         settings.sync()
 
     def reset_settings(self) -> None:
@@ -2325,7 +3159,13 @@ class OverlayWindow(QWidget):
         old_model = self.config.model
         self._opacity = 0.85
         self._active_opacity = 0.85
-        self._show_status = True
+        self._visual_mode = "piano"
+        self._erhu_vertical = False
+        self._erhu_history = True
+        self._erhu_body = True
+        self._erhu_mapper.reset()
+        self._erhu_state = None
+        self._erhu_trails.clear()
         self._scale_percent = 100
         self._instrument_index = 0
         self._sound_source = "windows"
@@ -2476,10 +3316,6 @@ class OverlayWindow(QWidget):
         # Qt has no portable per-pixel input passthrough. Keep the lock button
         # usable on non-Windows platforms instead of making unlock impossible.
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-
-    def _set_show_status(self, enabled: bool) -> None:
-        self._show_status = enabled
-        self.update()
 
     def _toggle_keyboard_only(self, enabled: bool) -> None:
         self._keyboard_only = enabled

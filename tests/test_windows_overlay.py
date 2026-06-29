@@ -7,12 +7,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PyQt6.QtCore import QEvent, QSettings, Qt
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtGui import QImage, QKeyEvent, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from config import AppConfig
+from note_model import NoteEvent
 from performance import INSTRUMENTS
-from ui_overlay import OverlayWindow
+from ui_overlay import ERHU_D_JIANPU, OverlayWindow
 
 
 @unittest.skipUnless(platform.system() == "Windows", "Windows-only native window test")
@@ -41,6 +42,14 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window.pos(), position)
         window.close()
 
+    def test_basic_pitch_bridge_is_packaged_by_windows_build(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertTrue((root / "basic_pitch_bridge.py").exists())
+        self.assertIn(
+            "basic_pitch_bridge.py",
+            (root / "build-windows.ps1").read_text(encoding="utf-8"),
+        )
+
     def test_lock_controls_mouse_passthrough(self) -> None:
         window = OverlayWindow(AppConfig(demo_mode=True))
         window.show()
@@ -67,13 +76,13 @@ class WindowsOverlayTests(unittest.TestCase):
         window._gpu_requirements_confirmed = True
         selected = []
         window.model_selected.connect(selected.append)
-        self.assertIn("model", window._control_rects())
+        self.assertIn("piano_model", window._control_rects())
 
-        window._activate_control("model")
+        window._activate_control("piano_model")
         self.assertEqual(config.model, "piano-gpu")
         self.assertEqual(selected, ["piano-gpu"])
 
-        window._activate_control("model")
+        window._activate_control("piano_model")
         self.assertEqual(config.model, "basic-pitch")
         self.assertEqual(selected, ["piano-gpu", "basic-pitch"])
         window.close()
@@ -97,15 +106,16 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(
             tuple(window._control_rects()),
             (
-                "performance",
+                "visual_mode",
                 "minimal",
-                "model",
                 "lock",
                 "top",
                 "smaller",
                 "larger",
                 "keyboard_opacity",
                 "active_opacity",
+                "performance",
+                "piano_model",
                 "input_mode",
                 "performance_help",
                 "ear_training",
@@ -118,7 +128,7 @@ class WindowsOverlayTests(unittest.TestCase):
         )
         self.assertGreater(
             window._control_rects()["ear_training"].top(),
-            window._control_rects()["performance"].top(),
+            window._control_rects()["visual_mode"].top(),
         )
         self.assertEqual(window._performance.input_mode, "keyboard")
         window._activate_control("performance_help")
@@ -370,9 +380,9 @@ class WindowsOverlayTests(unittest.TestCase):
             first._opacity = 0.20
             first._active_opacity = 0.70
             first._scale_percent = 120
-            first._show_status = False
             first._instrument_index = 5
             first._sound_source = "soundfont"
+            first._visual_mode = "erhu"
             first.save_settings()
             first.close()
 
@@ -386,10 +396,259 @@ class WindowsOverlayTests(unittest.TestCase):
             self.assertEqual(restored._opacity, 0.20)
             self.assertEqual(restored._active_opacity, 0.70)
             self.assertEqual(restored._scale_percent, 120)
-            self.assertFalse(restored._show_status)
             self.assertEqual(restored._instrument_index, 5)
             self.assertEqual(restored._sound_source, "soundfont")
+            self.assertEqual(restored._visual_mode, "piano")
+            self.assertEqual(restored.config.model, "piano-gpu")
             restored.close()
+
+    def test_erhu_mode_selects_only_strongest_melody_note(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window._display_notes(
+            [
+                NoteEvent(62, 0, 0.5, 120, 0.70),
+                NoteEvent(69, 0, 0.5, 80, 0.95),
+                NoteEvent(74, 0, 0.5, 127, 0.80),
+            ]
+        )
+        self.assertIsNotNone(window._erhu_state)
+        self.assertEqual(window._erhu_state.midi, 69)
+        self.assertEqual(window._erhu_state.string_name, "outer")
+        self.assertEqual(window.visual_notes, [])
+        window.close()
+
+    def test_erhu_string_color_offset_preserves_hue_and_changes_lightness(self):
+        inner = OverlayWindow._erhu_note_color(69, "inner")
+        outer = OverlayWindow._erhu_note_color(69, "outer")
+        inner_hue, _, inner_lightness, _ = inner.getHslF()
+        outer_hue, _, outer_lightness, _ = outer.getHslF()
+        self.assertAlmostEqual(inner_hue, outer_hue, places=3)
+        self.assertGreater(outer_lightness, inner_lightness)
+        self.assertGreater(outer_lightness - inner_lightness, 0.10)
+
+    def test_erhu_history_alpha_halves_by_note_order(self):
+        self.assertEqual(
+            [OverlayWindow._erhu_history_alpha(index) for index in range(5)],
+            [128, 64, 32, 16, 8],
+        )
+        self.assertEqual(OverlayWindow._erhu_history_alpha(-1), 0)
+        self.assertEqual(
+            [OverlayWindow._erhu_history_diameter(index) for index in range(3)],
+            [13.5, 12.75, 12.0],
+        )
+        self.assertEqual(OverlayWindow._erhu_history_diameter(-1), 0.0)
+
+    def test_erhu_body_geometry_aligns_with_vertical_strings(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window._activate_control("erhu_rotate")
+        axes = {
+            "inner": window.width() * 0.36,
+            "outer": window.width() * 0.62,
+        }
+        rect = window._erhu_body_rect(
+            vertical=True,
+            bottom=window.height() - 17.0,
+            string_axis=axes,
+        )
+        self.assertLess(rect.left(), axes["inner"])
+        self.assertGreater(rect.right(), axes["outer"])
+        self.assertGreaterEqual(rect.width(), abs(axes["outer"] - axes["inner"]) + 68)
+        self.assertGreater(
+            axes["inner"] - rect.left(),
+            rect.right() - axes["outer"],
+        )
+        window.close()
+
+    def test_erhu_vertical_string_spacing_follows_structure_visibility_and_mirror(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window._activate_control("erhu_rotate")
+        narrow = window._erhu_vertical_string_axis()
+        self.assertLess(narrow["inner"], narrow["outer"])
+        self.assertAlmostEqual(narrow["inner"], window.width() * 0.49)
+        window._activate_control("erhu_mirror")
+        mirrored = window._erhu_vertical_string_axis()
+        self.assertGreater(mirrored["inner"], mirrored["outer"])
+        rect = window._erhu_body_rect(
+            vertical=True,
+            bottom=window.height() - 17.0,
+            string_axis=narrow,
+        )
+        body_center = rect.center().x()
+        narrow_center = (narrow["inner"] + narrow["outer"]) / 2
+        mirrored_center = (mirrored["inner"] + mirrored["outer"]) / 2
+        self.assertAlmostEqual(
+            narrow_center - body_center,
+            body_center - mirrored_center,
+            delta=0.1,
+        )
+        window._activate_control("erhu_body")
+        wide = window._erhu_vertical_string_axis()
+        self.assertGreater(abs(wide["inner"] - wide["outer"]), abs(narrow["inner"] - narrow["outer"]))
+        self.assertAlmostEqual(wide["outer"], window.width() * 0.36)
+        window.close()
+
+    def test_erhu_vertical_labels_follow_strings_without_overlap(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window._activate_control("erhu_rotate")
+        axes = window._erhu_vertical_string_axis()
+        rects = window._erhu_vertical_label_rects(top=88.0, string_axis=axes)
+        self.assertFalse(rects["inner"].intersects(rects["outer"]))
+        self.assertEqual(rects["inner"].top(), rects["outer"].top())
+        window._activate_control("erhu_mirror")
+        mirrored = window._erhu_vertical_label_rects(
+            top=88.0,
+            string_axis=window._erhu_vertical_string_axis(),
+        )
+        self.assertFalse(mirrored["inner"].intersects(mirrored["outer"]))
+        self.assertEqual(mirrored["inner"].top(), mirrored["outer"].top())
+        window.close()
+
+    def test_erhu_top_bars_cover_vertical_strings(self):
+        axes = {"inner": 96.0, "outer": 166.0}
+        upper, lower = OverlayWindow._erhu_top_bar_rects(top=88.0, string_axis=axes)
+        self.assertLess(upper.left(), axes["inner"])
+        self.assertGreater(upper.right(), axes["outer"])
+        self.assertLess(lower.left(), axes["inner"])
+        self.assertGreater(lower.right(), axes["outer"])
+        self.assertGreater(upper.width(), lower.width())
+        self.assertGreater(
+            axes["inner"] - upper.left(),
+            upper.right() - axes["outer"],
+        )
+
+    def test_erhu_mode_demo_sequence_is_stable_and_tracks_pitch(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        seen = []
+        for midi in (62, 64, 66, 67, 69, 71, 72, 74):
+            window._display_notes([NoteEvent(midi, 0, 0.5, 90, 0.9)])
+            seen.append(window._erhu_state.string_name)
+        self.assertEqual(seen, ["inner"] * len(seen))
+        self.assertEqual(window._erhu_state.note_name, "D5")
+        self.assertEqual(window._erhu_state.position, 12)
+        window.close()
+
+    def test_visual_mode_switch_resets_mode_specific_state(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window._display_notes([NoteEvent(69, 0, 0.5, 90, 0.9)])
+        self.assertIsNotNone(window._erhu_state)
+        window._set_visual_mode("piano")
+        self.assertEqual(window._visual_mode, "piano")
+        self.assertIsNone(window._erhu_state)
+        self.assertEqual(window._erhu_trails, [])
+        window.close()
+
+    def test_top_control_toggles_piano_and_erhu_modes(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        selected_models = []
+        selected_modes = []
+        window.model_selected.connect(selected_models.append)
+        window.visual_mode_changed.connect(selected_modes.append)
+        controls = window._control_rects()
+        self.assertIn("visual_mode", controls)
+        self.assertGreater(
+            controls["performance"].top(),
+            controls["visual_mode"].top(),
+        )
+        self.assertEqual(window._visual_mode, "piano")
+        window._activate_control("visual_mode")
+        self.assertEqual(window._visual_mode, "erhu")
+        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertIn("Erhu Shadow", window.status_text)
+        window._activate_control("visual_mode")
+        self.assertEqual(window._visual_mode, "piano")
+        self.assertEqual(window.config.model, "piano-gpu")
+        self.assertIn("钢琴模式", window.status_text)
+        self.assertEqual(selected_models, ["basic-pitch", "piano-gpu"])
+        self.assertEqual(selected_modes, ["erhu", "piano"])
+        window.close()
+
+    def test_erhu_mode_disables_manual_cpu_gpu_model_switch(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        selected = []
+        window.model_selected.connect(selected.append)
+        window._set_visual_mode("erhu")
+        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertNotIn("piano_model", window._control_rects())
+        selected.clear()
+        window._select_model("piano-gpu")
+        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertEqual(selected, [])
+        window.close()
+
+    def test_erhu_second_row_rotates_strings_without_hiding_common_controls(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        controls = window._control_rects()
+        self.assertIn("erhu_rotate", controls)
+        self.assertGreater(
+            controls["erhu_rotate"].top(),
+            controls["visual_mode"].top(),
+        )
+        for name in (
+            "visual_mode",
+            "minimal",
+            "lock",
+            "top",
+            "smaller",
+            "larger",
+            "keyboard_opacity",
+            "active_opacity",
+        ):
+            self.assertIn(name, controls)
+        self.assertFalse(window._erhu_vertical)
+        self.assertIn("erhu_body", controls)
+        self.assertIn("erhu_mirror", controls)
+        self.assertFalse(window._control_enabled("erhu_body"))
+        self.assertTrue(window._control_enabled("erhu_mirror"))
+        normal_horizontal = window._erhu_horizontal_string_axis()
+        self.assertLess(normal_horizontal["inner"], normal_horizontal["outer"])
+        window._activate_control("erhu_mirror")
+        mirrored_horizontal = window._erhu_horizontal_string_axis()
+        self.assertGreater(mirrored_horizontal["inner"], mirrored_horizontal["outer"])
+        self.assertTrue(window._erhu_mirrored)
+        window._activate_control("erhu_mirror")
+        self.assertFalse(window._erhu_mirrored)
+        horizontal_size = window.size()
+        window._activate_control("erhu_rotate")
+        self.assertTrue(window._erhu_vertical)
+        self.assertTrue(window._erhu_body)
+        self.assertTrue(window._control_enabled("erhu_body"))
+        self.assertTrue(window._control_enabled("erhu_mirror"))
+        self.assertEqual(window.width(), horizontal_size.height())
+        self.assertEqual(window.height(), horizontal_size.width())
+        self.assertIn("竖向", window.status_text)
+        window._display_notes([NoteEvent(69, 0, 0.5, 90, 0.9)])
+        image = QImage(
+            window.width(),
+            window.height(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        window._draw_erhu(painter, window._erhu_trails[-1].born)
+        painter.end()
+        self.assertFalse(image.isNull())
+        self.assertEqual(ERHU_D_JIANPU[69 % 12], "5")
+        self.assertIn("erhu_history", window._control_rects())
+        self.assertIn("erhu_body", window._control_rects())
+        self.assertIn("erhu_mirror", window._control_rects())
+        self.assertTrue(window._erhu_body)
+        window._activate_control("erhu_body")
+        self.assertFalse(window._erhu_body)
+        self.assertIn("二胡结构件", window.status_text)
+        window._activate_control("erhu_history")
+        self.assertFalse(window._erhu_history)
+        self.assertEqual(window._erhu_trails, [])
+        window._activate_control("erhu_rotate")
+        self.assertFalse(window._erhu_vertical)
+        self.assertEqual(window.size(), horizontal_size)
+        window.close()
 
     def test_model_download_worker_installs_verified_file(self):
         window = OverlayWindow(AppConfig(demo_mode=True))
