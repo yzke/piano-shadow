@@ -1,6 +1,6 @@
 import unittest
 
-from erhu_model import ErhuMapper
+from erhu_model import ErhuMapper, ErhuStateMachine, erhu_jianpu
 
 
 class ErhuMapperTests(unittest.TestCase):
@@ -36,13 +36,35 @@ class ErhuMapperTests(unittest.TestCase):
         self.assertEqual(first.string_name, "inner")
         self.assertEqual(second.string_name, "inner")
         self.assertEqual(third.string_name, "inner")
-        self.assertEqual((second.position, third.position), (7, 9))
+        self.assertGreater(third.position, second.position)
 
-    def test_state_switches_when_other_string_is_materially_closer(self):
+    def test_state_switches_when_current_string_is_unplayable(self):
         mapper = ErhuMapper()
-        mapper.map(62)
-        state = mapper.map(74)
-        self.assertEqual((state.string_name, state.position), ("outer", 5))
+        mapper.map(62, timestamp=0.0)
+        state = None
+        for frame in range(20):
+            state = mapper.map(82, timestamp=0.3 + frame * 0.04)
+        self.assertEqual(state.string_name, "outer")
+
+    def test_a4_does_not_bounce_between_strings(self):
+        mapper = ErhuStateMachine()
+        states = [
+            mapper.map(69 + jitter, confidence=0.9, timestamp=index * 0.03)
+            for index, jitter in enumerate((0.0, 0.05, -0.04, 0.03, -0.02, 0.01))
+        ]
+        self.assertTrue(all(state is not None for state in states))
+        self.assertEqual({state.string_name for state in states if state}, {"outer"})
+
+    def test_low_confidence_does_not_update_target(self):
+        mapper = ErhuMapper()
+        self.assertIsNone(mapper.map(69, confidence=0.1))
+        stable = mapper.map(69, confidence=0.9)
+        low = mapper.map(74, confidence=0.1)
+        self.assertEqual(low, stable)
+
+    def test_key_mode_changes_jianpu_only(self):
+        self.assertEqual(erhu_jianpu(69, "D"), "5")
+        self.assertEqual(erhu_jianpu(69, "G"), "2")
 
     def test_reset_removes_string_history(self):
         mapper = ErhuMapper()

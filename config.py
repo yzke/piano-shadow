@@ -99,7 +99,7 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
     )
     parser.add_argument(
         "--model",
-        choices=("basic-pitch", "piano-gpu"),
+        choices=("basic-pitch", "piano-gpu", "pitch-tracker"),
         default="piano-gpu",
         help="音频识别模型",
     )

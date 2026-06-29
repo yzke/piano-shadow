@@ -11,8 +11,10 @@ from PyQt6.QtGui import QImage, QKeyEvent, QPainter
 from PyQt6.QtWidgets import QApplication
 
 from config import AppConfig
+from erhu_model import ErhuKeyMode
 from note_model import NoteEvent
 from performance import INSTRUMENTS
+from erhu_pitch_tracker import PitchEvent
 from ui_overlay import ERHU_D_JIANPU, OverlayWindow
 
 
@@ -383,6 +385,7 @@ class WindowsOverlayTests(unittest.TestCase):
             first._instrument_index = 5
             first._sound_source = "soundfont"
             first._visual_mode = "erhu"
+            first._erhu_key_mode = ErhuKeyMode.G
             first.save_settings()
             first.close()
 
@@ -400,6 +403,7 @@ class WindowsOverlayTests(unittest.TestCase):
             self.assertEqual(restored._sound_source, "soundfont")
             self.assertEqual(restored._visual_mode, "piano")
             self.assertEqual(restored.config.model, "piano-gpu")
+            self.assertEqual(restored._erhu_key_mode, ErhuKeyMode.G)
             restored.close()
 
     def test_erhu_mode_selects_only_strongest_melody_note(self):
@@ -416,6 +420,16 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window._erhu_state.midi, 69)
         self.assertEqual(window._erhu_state.string_name, "outer")
         self.assertEqual(window.visual_notes, [])
+        window.close()
+
+    def test_erhu_pitch_event_drives_float_position(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._set_visual_mode("erhu")
+        window.add_pitch(PitchEvent(440.0, 69.5, 0.88, 0.0))
+        self.assertIsNotNone(window._erhu_state)
+        self.assertEqual(window._erhu_state.string_name, "outer")
+        self.assertAlmostEqual(window._erhu_state.position, 0.5)
+        self.assertAlmostEqual(window._erhu_target_position, 0.5)
         window.close()
 
     def test_erhu_string_color_offset_preserves_hue_and_changes_lightness(self):
@@ -496,6 +510,10 @@ class WindowsOverlayTests(unittest.TestCase):
         window._activate_control("erhu_rotate")
         axes = window._erhu_vertical_string_axis()
         rects = window._erhu_vertical_label_rects(top=88.0, string_axis=axes)
+        note_rect = window._erhu_vertical_note_rect()
+        self.assertLess(note_rect.bottom(), rects["inner"].top())
+        self.assertLess(note_rect.bottom(), rects["outer"].top())
+        self.assertLess(note_rect.top(), 50)
         self.assertFalse(rects["inner"].intersects(rects["outer"]))
         self.assertEqual(rects["inner"].top(), rects["outer"].top())
         window._activate_control("erhu_mirror")
@@ -506,6 +524,14 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertFalse(mirrored["inner"].intersects(mirrored["outer"]))
         self.assertEqual(mirrored["inner"].top(), mirrored["outer"].top())
         window.close()
+
+    def test_erhu_vertical_position_places_open_string_above_high_position(self):
+        top = 88.0
+        bottom = 188.0
+        self.assertLess(
+            OverlayWindow._erhu_vertical_position_y(top, bottom, 0),
+            OverlayWindow._erhu_vertical_position_y(top, bottom, 18),
+        )
 
     def test_erhu_top_bars_cover_vertical_strings(self):
         axes = {"inner": 96.0, "outer": 166.0}
@@ -558,13 +584,13 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window._visual_mode, "piano")
         window._activate_control("visual_mode")
         self.assertEqual(window._visual_mode, "erhu")
-        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertEqual(window.config.model, "pitch-tracker")
         self.assertIn("Erhu Shadow", window.status_text)
         window._activate_control("visual_mode")
         self.assertEqual(window._visual_mode, "piano")
         self.assertEqual(window.config.model, "piano-gpu")
         self.assertIn("钢琴模式", window.status_text)
-        self.assertEqual(selected_models, ["basic-pitch", "piano-gpu"])
+        self.assertEqual(selected_models, ["pitch-tracker", "piano-gpu"])
         self.assertEqual(selected_modes, ["erhu", "piano"])
         window.close()
 
@@ -573,11 +599,11 @@ class WindowsOverlayTests(unittest.TestCase):
         selected = []
         window.model_selected.connect(selected.append)
         window._set_visual_mode("erhu")
-        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertEqual(window.config.model, "pitch-tracker")
         self.assertNotIn("piano_model", window._control_rects())
         selected.clear()
         window._select_model("piano-gpu")
-        self.assertEqual(window.config.model, "basic-pitch")
+        self.assertEqual(window.config.model, "pitch-tracker")
         self.assertEqual(selected, [])
         window.close()
 

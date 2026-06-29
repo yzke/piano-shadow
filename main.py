@@ -22,8 +22,10 @@ from config import (
     ensure_data_layout,
     parse_args,
 )
+from erhu_model import ErhuKeyMode
 from note_model import NoteEvent, is_piano_note
 from piano_transcription import PianoGpuTranscriptionWorker
+from erhu_pitch_tracker import ErhuPitchTracker
 from transcription import TranscriptionWorker
 from ui_overlay import OverlayWindow
 
@@ -177,6 +179,27 @@ class TrayController:
             if checked != window._erhu_mirrored
             else None
         )
+        self.erhu_key_menu = self.erhu_menu.addMenu("调式显示")
+        self.erhu_key_actions: dict[ErhuKeyMode, QAction] = {}
+        erhu_key_group = QActionGroup(self.erhu_key_menu)
+        erhu_key_group.setExclusive(True)
+        for title, mode in (
+            ("自动", ErhuKeyMode.AUTO),
+            ("D调", ErhuKeyMode.D),
+            ("G调", ErhuKeyMode.G),
+            ("F调", ErhuKeyMode.F),
+            ("Bb调", ErhuKeyMode.BB),
+            ("C调", ErhuKeyMode.C),
+            ("A调", ErhuKeyMode.A),
+        ):
+            action = QAction(title, self.erhu_key_menu, checkable=True)
+            action.triggered.connect(
+                lambda checked, selected=mode: checked
+                and window._set_erhu_key_mode(selected)
+            )
+            erhu_key_group.addAction(action)
+            self.erhu_key_menu.addAction(action)
+            self.erhu_key_actions[mode] = action
         self.erhu_menu.addAction(self.erhu_vertical_action)
         self.erhu_menu.addAction(self.erhu_history_action)
         self.erhu_menu.addAction(self.erhu_body_action)
@@ -223,7 +246,11 @@ class TrayController:
         self.erhu_mirror_action.setChecked(
             (not is_piano) and self.window._erhu_mirrored
         )
-        self.model_actions[self.window.config.model].setChecked(True)
+        for mode, action in self.erhu_key_actions.items():
+            action.setChecked(self.window._erhu_key_mode == mode)
+        model_action = self.model_actions.get(self.window.config.model)
+        if model_action is not None:
+            model_action.setChecked(True)
 
     def _toggle_window(self) -> None:
         self.window.hide() if self.window.isVisible() else self.window.show()
@@ -282,7 +309,11 @@ def run(config: AppConfig) -> int:
             window.set_status(
                 "Switching · Piano GPU"
                 if model_name == "piano-gpu"
-                else "Switching · Basic Pitch 主旋律",
+                else (
+                    "Switching · Pitch Tracker"
+                    if model_name == "pitch-tracker"
+                    else "Switching · Basic Pitch 主旋律"
+                ),
                 False,
             )
             config.model = model_name
@@ -318,7 +349,11 @@ def run(config: AppConfig) -> int:
                 worker_class = (
                     PianoGpuTranscriptionWorker
                     if model_name == "piano-gpu"
-                    else TranscriptionWorker
+                    else (
+                        ErhuPitchTracker
+                        if model_name == "pitch-tracker"
+                        else TranscriptionWorker
+                    )
                 )
                 on_notes = (
                     lambda notes: is_current()
@@ -338,6 +373,14 @@ def run(config: AppConfig) -> int:
                         and window.model_fallback_received.emit(fallback),
                         lambda path, url: is_current()
                         and window.model_download_required.emit(path, url),
+                    )
+                elif model_name == "pitch-tracker":
+                    worker = worker_class(
+                        config,
+                        audio_queue,
+                        lambda pitch: is_current()
+                        and window.pitch_received.emit(pitch),
+                        on_status,
                     )
                 else:
                     worker = worker_class(
