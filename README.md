@@ -1,346 +1,242 @@
 # Piano Shadow
 
-Piano Shadow 是一个本地运行的桌面钢琴音符悬浮窗。它捕获系统正在播放的声音，
-使用 Spotify Basic Pitch 转录钢琴音符，再把近期音符显示在透明 88 键键盘上。
-它面向听音与键位联想，不是专业扒谱工具；不上传音频，也不调用云 API。
+Piano Shadow 是一个本地运行的桌面音乐可视化与演奏工具。它可以把系统正在播放的钢琴声音显示到透明 88 键键盘上，也可以切换到 Erhu Shadow，把二胡、人声、小提琴这类连续音高旋律显示成实时滑动光点。程序不上传音频，不调用云 API。
 
-## 界面预览
+当前版本：`0.6.3`
 
-监听与音符识别：
+## 主要功能
 
-![Piano Shadow 监听与音符识别](docs/screenshots/listening-overlay.png)
+### 钢琴识别可视化
 
-纯键盘透明悬浮模式：
+- 透明悬浮窗显示完整 88 键钢琴。
+- 从系统音频 loopback / monitor 捕获正在播放的声音。
+- 支持两套钢琴识别后端：
+  - `Piano GPU`：面向纯钢琴，高精度，优先使用本机 CUDA 环境。
+  - `Basic Pitch`：CPU/ONNX 通用模式，安装包内置，作为默认回退。
+- 音名、固定唱名、琴键高亮、残影和光柱共享同一套 12 音级颜色。
+- 同一音级跨八度保持同色，低音略暗、高音略亮。
+- 支持独立调节毛玻璃/键盘透明度和彩色高亮透明度。
+- 支持纯键盘模式、置顶、锁定、鼠标穿透、托盘显示/隐藏和恢复默认设置。
 
-![Piano Shadow 纯键盘模式](docs/screenshots/keyboard-only.png)
+### 钢琴演奏模式
 
-键盘与彩色高亮独立透明度：
+- 可用电脑键盘或 MIDI 键盘直接演奏。
+- 键盘映射按音阶顺延，适合双手：
+  - `F1–F12`：低音区
+  - `1–=`：中低音区，`8 9 0 - =` 顺延到下一八度
+  - `Q–]`、`A–'`、`Z–/`：继续向上排列
+- `← / →` 按五度圈切换全部大调及关系小调：`C大/A小 → G大/E小 → D大/B小 ...`
+- `↑ / ↓` 调整整体八度。
+- `Shift` 临时升半音，`Ctrl` 临时降半音。
+- `Space` 延音/揉弦，`Enter` 休止，`Alt+目标音` 可用于支持滑音的音色。
+- 钢琴演奏模式会在键盘上标出当前调的主音锚点：
+  - C 调显示 `1 · C4`
+  - G 调显示 `1 · G4`
+  - F 调显示 `1 · F4`
+  - 上下八度后标记跟随移动，避免切调后迷路。
 
-![Piano Shadow 透明度调节](docs/screenshots/transparency-controls.png)
+### 音色与音源
 
-## 环境与安装
-
-要求 Python 3.10+。建议使用独立虚拟环境：
-
-```bash
-cd piano_shadow
-python -m venv .venv
-source .venv/bin/activate              # Windows: .venv\Scripts\activate
-python -m pip install -U pip
-pip install -r requirements.txt
-```
-
-Basic Pitch 会安装 TensorFlow/ONNX 等较大的依赖，首次安装和首次推理可能较慢。
-如果只想查看界面，可以只安装轻量依赖：
-
-```bash
-pip install -r requirements-demo.txt
-python main.py --demo-mode
-```
-
-## 启动
-
-```bash
-python main.py --demo-mode
-python main.py --demo-midi "60,64,67;62,65,69;59,63,67"
-python main.py
-python main.py --model piano-gpu
-python main.py --model basic-pitch
-python main.py --chunk 0.5 --decay 1.4 --min-amp 0.008 --width 900 --height 190
-```
-
-### 二胡模式 · Erhu Shadow
-
-右键悬浮窗，在“可视化模式”中选择“二胡模式”。该模式使用实时 Pitch Tracker
-跟踪单音主频，而不是等待转谱模型输出新音符；滑音、连弓和揉弦会以连续光点显示
-在两根二胡弦上的位置：内弦 D4、外弦 A4，每根弦覆盖空弦到第 18 个半音位置。
-重叠音域会结合上一根弦、移动距离和换弦代价保持显示稳定。当前音高显示为绝对音名、弦位和 D 调简谱（例如
-`A4 · 外弦 0 · D调 5`）。这是音高位置可视化，不代表对真实二胡指法的识别。
-外弦的音高色会略微提亮，内弦略微压暗；色相不变，以便同时辨认音级与弦别。
-
-程序每次启动默认进入钢琴模式并加载 Piano GPU；点击右上角“钢”按钮切换为“胡”
-后，会先停止钢琴模型，再启动实时音高追踪并继续监听。二胡模式固定使用
-Pitch Tracker，CPU/GPU 模型切换控件会停用；切回钢琴后恢复。可用
-`python main.py --demo-midi "62,64,66,67,69,71,72,74"` 检查光点移动。
-
-左键拖动窗口可移动；右键菜单可分别调节键盘和彩色高亮透明度及窗口大小，并切换识别模型、位置
-锁定和置顶。所有操作均通过 UI 完成，不启用键盘快捷键。
-鼠标穿透无需单独设置：锁定时自动穿透，解锁时恢复交互；锁定后可从通知区域解锁。
-
-右上角第一排从左到右为：钢琴/二胡模式、纯键盘模式、锁定/解锁、确保置顶、缩小、
-放大、键盘透明度、彩色高亮透明度。
-钢琴模式第二排提供演奏模式和 CPU/GPU 模型切换；二胡模式第二排提供横弦/竖弦旋转、
-历史轨迹、结构件显隐和镜像开关。竖向模式会交换面板宽高，并将通用按钮沿右侧纵向排列。
-模型芯片未点亮表示 Basic Pitch，蓝色点亮表示 Piano GPU。未锁定时可直接
-拖动窗口，无需单独的移动按钮。键盘透明度提供 0%–100% 档位，控制毛玻璃和未按下
-黑白键；彩色高亮透明度提供 30%–100% 档位，独立控制按下的七彩琴键、光晕、
-动态音名/唱名和顶部彩色唱名。右键菜单提供两个独立滑杆。窗口拖动优先使用桌面系统原生移动协议，
-以改善 WSL/Wayland 下无边框窗口的拖动兼容性。
-动态音名与唱名使用同一音级颜色、亮度和透明度，并与激活琴键统一跟随彩色高亮设置。
-默认窗口高度为 190px，
-为动态音名与顶部控制区保留更充足的垂直间距。
-
-模型芯片左侧使用对应琴键颜色显示固定唱名 `Do Re Mi Fa Sol La Si`，便于快速
-建立颜色与音级的对应关系。
-
-顶部的四角聚焦图标可进入“纯键盘模式”：自动锁定位置，隐藏毛玻璃背景、状态、
-参数和其他控制按钮，只保留彩色唱名图例、键盘、动态音名/唱名及锁图标。点击唯一的锁
-图标会退出该模式并恢复拖动；右键菜单也提供相同开关。
-
-Windows 原生运行时置顶图标可直接开启或关闭置顶，并通过 Win32 API 切换，不会重建
-窗口或改变双屏坐标。WSL/Wayland 下按钮保持为“确保置顶”，需要取消时使用右键菜单。
-Windows 只在开启置顶时进入系统 TOPMOST 层，不再通过定时器反复抢占层级：普通应用
-不会盖住悬浮窗，而任务栏、截图工具等后创建的系统置顶界面可以临时显示在其上方。
-置顶与鼠标穿透彼此独立；所有设置和退出操作可从通知区域的 Piano Shadow 托盘图标
-完成。双击托盘图标可显示或隐藏悬浮窗；托盘菜单可恢复默认设置。
-
-程序会记忆窗口位置、大小、两类透明度、置顶、锁定和纯键盘模式
-状态，下次启动自动恢复。若显示器布局发生变化，超出当前屏幕的旧位置不会恢复。
-
-## 演奏模式
-
-主界面的钢琴图标、右键菜单或托盘菜单可开启演奏功能，再次点击即可关闭。开启后不会
-切换或重绘成另一套界面：原状态栏、设置、彩色唱名和控制按钮全部保留，并额外显示
-键盘/MIDI 输入切换和演奏说明按钮。说明默认关闭，当前调号以对应音级颜色显示在
-状态栏下方。
-
-电脑键盘默认映射：
-
-- `F1–F12`：C2–G3（前 7 键为一组音阶，后 5 键顺延高八度）
-- `1–=`：C3–G4（`8、9、0、-、=` 顺延高八度）
-- `Q–]`：C4–G5
-- `A–'`：C5–F6
-- `Z–/`：C6–E7
-- `→`：沿五度圈顺时针进入下一组调；`←`：沿五度圈逆时针返回上一组调。
-  关系大小调合并为一个位置：`C大/A小 → G大/E小 → D大/B小 → … → F大/D小`。
-  12 次切换覆盖全部大调及其关系小调，界面同时显示两个调名；键盘以大调主音排列，
-  关系小调从第 6 级开始。
-- `↓`：升高八度；`↑`：降低八度
-- `Shift`：临时升半音；`Ctrl`：临时降半音
-- 按住 `Space`：延音；按住 `Enter`：休止并阻止新音符
-
-每次进入演奏模式恢复 C 大调、默认八度、键盘输入和关闭延音。演奏期间暂停音频识别，
-退出后自动恢复。Windows 默认通过系统 WinMM General MIDI 的 Acoustic Grand Piano
-发声，不增加运行依赖。
-
-物理 MIDI 输入使用 `python-rtmidi`，自动连接第一个设备，支持力度和 CC64 延音踏板。
-
-### 演奏音源与音色
-
-默认使用 Windows WinMM General MIDI，首次启动保持 `WIN · 大钢琴`，无需额外下载。
-演奏模式第二排提供上一音色、当前音源与音色、下一音色、恢复默认和音源管理控件。
-内置常用钢琴、电钢琴、风琴、吉他、贝斯、弦乐、铜管、萨克斯、长笛和合成器音色；
-切换音色时界面会直接显示当前组合。
-
-问号说明会随当前音色显示对应演奏技法：
-
-- 钢琴类：`Space` 延音，`Alt` 弱音，`Alt+Space` 选择性延音。
-- 风琴：按住 `Alt` 加速 Leslie/调制，松开恢复。
-- 吉他/贝斯：保持当前音，`Alt+目标音` 滑弦或推弦；`Space` 延音。
-- 独奏弦乐、管乐和合成器：`Space` 揉弦/颤音，`Alt+目标音` 滑音。
-- `二胡（近似）`使用 GM Fiddle 音色及单音控制，同样支持揉弦与一个八度内滑音。
-
-所有音色下 `Enter` 保持为休止。程序会补充延音锁存、选择性延音和弱音力度逻辑，
-避免完全依赖 Windows GM 或 SoundFont 对 CC64/66/67 的实现差异。
-
-音源管理可选下载约 31 MB 的 GeneralUser GS 到：
+- 默认使用 Windows WinMM General MIDI，不需要额外音源。
+- 演奏模式第二排提供上一音色、当前音色、下一音色、恢复默认和音源管理。
+- 内置常用钢琴、电钢琴、风琴、吉他、贝斯、弦乐、铜管、萨克斯、长笛、合成器和近似二胡音色。
+- 可在界面内下载 GeneralUser GS SoundFont 到：
 
 ```text
 %LOCALAPPDATA%\PianoShadow\soundfonts\GeneralUser-GS.sf2
 ```
 
-下载采用备用来源、进度显示、固定 SHA-256 校验和 `.part` 原子安装。安装后点击当前
-音源标签可在 `WIN` 与 `SF2` 间切换；音源文件损坏、缺失或播放引擎不可用时自动保持
-Windows 默认音源。音色和音源选择会随窗口设置持久化；恢复默认按钮可随时回到
-`WIN · 大钢琴`。GeneralUser GS 由
-S. Christian Collins 制作并允许免费再分发；TinySoundFont 播放引擎使用 MIT 许可证。
+- 下载带进度、备用来源、SHA-256 校验和 `.part` 原子安装。
+- 安装后可在 `WIN` 与 `SF2` 之间切换。
 
-演奏模式开启后，输入方式、说明和听音练习按钮独立显示在主功能区的下一排。听音练习
-默认关闭，连续点击按钮依次切换 `1 音、3 音、5 音、7 音、关闭`。每题先播放一组音，
-再等待使用电脑键盘或 MIDI 按原顺序复现；全部正确后自动进入下一题，答错则重播当前题。
-示范播放只发声、不点亮琴键；只有用户实际作答时才显示琴键高亮。示范结束后若两秒内
-没有开始作答，会自动重播同一组；一旦开始输入则取消待执行的重播，避免打断多音作答。
-题目跟随当前大小调：单音覆盖不同音级和音区，三音使用常见调内三和弦及转位，五音使用
-大小调五声音阶材料，七音使用完整调式片段；音域、起始级数、方向和转位均带随机变化。
-作答正确后，键盘上方会短暂显示整组音名与唱名；答错时会标出出错序号、
-实际按下的音和正确音。正确答案沿用对应琴键的音级颜色及彩色高亮透明度，错误音使用
-红色提示。
+### 听音练习
 
-按钮图形由程序直接绘制为高 DPI 矢量图标，不依赖外部图片或图标字体。透明度也在
-程序绘制层完成，因此 WSLg/Wayland 不支持窗口级透明度时仍然有效。
+- 演奏模式下提供听音练习按钮。
+- 连续点击切换：`1 音 → 3 音 → 5 音 → 7 音 → 关闭`。
+- 每题先播放示范，再监听用户按键。
+- 用户按对后自动进入下一题；答错会标出错在第几个音、实际按下的音和正确音。
+- 示范播放时不会点亮琴键，只有用户作答时才显示高亮。
+- 示范结束两秒后若没有开始作答，会自动重播当前题。
+- 题目跟随当前调式，包含单音、调内三和弦/转位、五声音阶和完整调式片段。
 
-音符使用固定的 12 音级配色：同一音级跨八度保持同一基础色相，例如 C2、C4、C7
-均使用柔玫瑰色。升音使用相邻的独立色相；音名、琴键和残影共享同一配色。
+### Erhu Shadow / 二胡实时音高可视化
 
-同一基础色还带有克制的音区明度偏移：C4 附近保持中性，低音区逐渐昏暗，高音区
-逐渐清亮，钢琴全音域的最大明度偏移约为 ±10%，仍不会破坏音名的色彩识别。
+- 右上角“钢/胡”按钮或右键菜单可在钢琴模式与二胡模式间切换。
+- 二胡模式不依赖 Basic Pitch 的 NoteEvent，而使用实时 Pitch Tracker 追踪连续主频。
+- 标准二胡定弦：
+  - 内弦 D4
+  - 外弦 A4
+- 光点位置表示绝对音高在对应弦上的把位：
+  - 空弦为 0
+  - 每升高 1 个半音，位置 +1
+  - 每根弦显示 0–18 位
+- 支持横向/竖向显示、历史音轨迹、琴托和上方横杆显隐、镜像视角。
+- 竖向模式当前采用“越往下音越高”的显示逻辑。
+- 选弦状态机避免 A4 等重叠音域在内外弦之间疯狂跳动：
+  - 默认保持上一根弦
+  - 低置信度不更新
+  - 另一根弦必须连续更优才换弦
+  - 空弦带容差，略低/略高的 D4、A4 也能稳定高亮空弦
+- 调式显示支持自动、D、G、F、Bb、C、A。调式只影响简谱文字，不影响光点物理位置。
 
-音名的水平中心与对应琴键中心对齐；半音密集时自动分层避让，并使用低透明度
-引导线连接琴键，便于直接建立“听到的音名—键盘位置”关联。
-每个音名下方还显示固定唱名（Do、Re、Mi、Fa、Sol、La、Si）；升音唱名带 `♯`，
-并与音名共享颜色和琴键锚点。
-动态音名与唱名只显示彩色动态字，不绘制常驻灰色底字。自然音采用柔玫瑰、杏橙、
-香槟金、薄荷绿、冰青、长春花蓝、兰花紫的近彩虹顺序；颜色针对液态玻璃界面降低
-纯色感并统一亮度，升音使用相邻自然音之间的过渡色。
-弹奏高亮使用 Screen 混合的中心光晕、键盘上方柔光柱、彩色边缘和顶部高光，静态
-键盘本身不额外增亮。
-中心光晕在黑白键全部绘制完成后统一叠加，避免黑键遮住相邻白键的荧光。黑白键
-保持各自音级的色相与饱和度，只交换感知亮度关系：白键更亮，黑键更深。
+## 界面截图
 
-每个分析块会按 Basic Pitch 给出的起音时间顺序显示：60ms 内的音符合并为和弦同时
-点亮，其余音符按原始间隔依次出现。单块时序回放最多增加 0.65 秒延迟。
+下面两张图是开发过程中的截图，不一定代表最新界面的每一个细节，但能说明功能形态。
 
-## Linux / PipeWire / PulseAudio
+### 听音练习
 
-程序通过 `soundcard` 寻找默认输出设备对应的 monitor source。PipeWire 用户通常需要
-`pipewire-pulse` 兼容层。先确认 monitor 存在：
+![听音练习开发截图](docs/screenshots/ear-training.png)
+
+### Erhu Shadow
+
+![Erhu Shadow 开发截图](docs/screenshots/erhu-shadow.png)
+
+仓库里还保留了早期钢琴识别与透明度控制截图：
+
+![钢琴监听开发截图](docs/screenshots/listening-overlay.png)
+
+![纯键盘开发截图](docs/screenshots/keyboard-only.png)
+
+![透明度控制开发截图](docs/screenshots/transparency-controls.png)
+
+## Windows 安装
+
+推荐直接下载 GitHub Release 里的安装包：
+
+```text
+PianoShadow-Setup-v0.6.3-Windows-x64.exe
+```
+
+安装包不要求用户安装 Python。默认路径：
+
+- 程序：`%LOCALAPPDATA%\Programs\PianoShadow`
+- 模型：`%LOCALAPPDATA%\PianoShadow\models`
+- 音源：`%LOCALAPPDATA%\PianoShadow\soundfonts`
+- 日志：`%LOCALAPPDATA%\PianoShadow\logs`
+
+安装时可选择桌面快捷方式和登录后自动启动。升级或卸载默认保留已下载模型和音源。
+
+### Windows 使用建议
+
+1. 确保播放器从默认扬声器输出声音。
+2. 启动 Piano Shadow。
+3. 钢琴识别默认进入钢琴模式；点击“胡”切到二胡模式。
+4. 二胡模式加载完成后状态会显示 `Listening · Pitch Tracker`。
+5. 如果窗口看不见，可从托盘图标显示/隐藏或恢复默认设置。
+
+某些蓝牙免提设备、独占模式播放器或虚拟声卡不提供 WASAPI loopback。遇到无输入时，先切回普通扬声器并关闭播放器独占模式。
+
+### Windows 源码运行
+
+如果需要从源码运行，在 PowerShell 中执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\setup-windows.ps1
+.\run-windows.ps1
+```
+
+只看界面或演示：
+
+```powershell
+.\setup-windows.ps1 -DemoOnly
+.\run-windows.ps1 -Demo
+```
+
+需要 Piano GPU 时安装 CUDA 版 PyTorch：
+
+```powershell
+.\setup-windows.ps1 -Gpu
+```
+
+安装版会自动检测 `%LOCALAPPDATA%\PianoShadow\venv` 中的 CUDA 环境，并通过本地桥接进程调用 GPU 推理；不会把 4GB 以上的 CUDA 运行时打进 EXE。
+
+### Windows 构建
+
+维护者构建安装包：
+
+```powershell
+.\build-installer.ps1 -Version 0.6.3
+```
+
+需要 Inno Setup 6。产物在 `dist`：
+
+```text
+PianoShadow-v0.6.3-Windows-x64.exe
+PianoShadow-Setup-v0.6.3-Windows-x64.exe
+```
+
+## Linux / WSL / 源码运行
+
+Linux 下使用 `soundcard` 寻找默认输出设备对应的 monitor source。PipeWire 用户通常需要 `pipewire-pulse` 兼容层。
 
 ```bash
 pactl get-default-sink
 pactl list short sources
 ```
 
-输出列表中应出现类似 `alsa_output....monitor`。没有时请在 `pavucontrol` 的“录音”
-页面为 Python 选择 “Monitor of ...”，并确认播放器正在输出声音。Wayland 合成器对
-“全局置顶”和点击穿透的策略不同；X11 下兼容性通常更一致。
+输出中应出现类似：
 
-WSLg/Wayland 若输出 `This plugin does not support raise()`，说明当前合成器不允许
-应用强制置顶。可优先尝试 WSLg 的 X11 后端：
+```text
+alsa_output....monitor
+```
+
+源码运行：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -r requirements.txt
+python main.py
+```
+
+只看界面：
+
+```bash
+pip install -r requirements-demo.txt
+python main.py --demo-mode
+```
+
+二胡演示：
+
+```bash
+python main.py --demo-midi "62;64;66;67;69;71;72;74"
+```
+
+WSLg/Wayland 对无边框窗口、置顶和点击穿透的支持不完全一致。如果出现 `This plugin does not support raise()`，说明合成器不允许应用强制置顶。可以尝试：
 
 ```bash
 QT_QPA_PLATFORM=xcb python main.py --demo-mode
 ```
 
-如果系统缺少 xcb 运行库，或双屏坐标仍由 WSLg 重排，使用 Windows Python 直接启动
-项目可获得最稳定的置顶和跨屏定位。
-
-## Windows
-
-程序使用 `soundcard` 的 WASAPI loopback，从默认扬声器捕获。请确保默认播放设备
-有效，且应用与播放器运行在同一用户会话。某些蓝牙免提设备或独占模式播放器不提供
-loopback；切回普通扬声器、关闭独占模式后重试。
-
-GitHub Release 提供正式安装包 `PianoShadow-Setup-vX.Y.Z-Windows-x64.exe`，无需安装
-Python。安装位置与可写数据分离：
-
-- 程序：`%LOCALAPPDATA%\Programs\PianoShadow`
-- GPU 模型：`%LOCALAPPDATA%\PianoShadow\models`
-- 日志：`%LOCALAPPDATA%\PianoShadow\logs`
-
-安装和升级时均可选择程序目录，也可选择桌面快捷方式和登录后自动启动。
-升级或卸载程序默认保留已下载模型，
-重新安装不需要再次下载。旧版本位于
-`%USERPROFILE%\piano_transcription_inference_data` 的模型会在首次启动时自动迁移。
-
-由于 CUDA PyTorch 运行时本身超过 4GB，标准安装包内置 Basic Pitch ONNX CPU，
-不重复打包 GPU 运行时和模型。需要 Piano GPU 时执行下方 `setup-windows.ps1 -Gpu`
-安装本机 CUDA 环境；安装版会自动检测并通过本地桥接进程调用。
-
-推荐直接在 Windows PowerShell 中运行，这也能避开 WSLg 的置顶和双屏定位限制。
-在项目目录打开 PowerShell，首次执行：
-
-```powershell
-Set-ExecutionPolicy -Scope Process Bypass
-.\setup-windows.ps1
-```
-
-脚本会自动寻找 Python 3.10/3.11，并把虚拟环境安装到
-`%LOCALAPPDATA%\PianoShadow\venv`，不会写死用户名或项目路径。之后运行：
-
-```powershell
-.\run-windows.ps1 -Demo
-.\run-windows.ps1
-.\run-windows.ps1 --chunk 3.0 --min-amp 0.01
-```
-
-只安装界面依赖可使用 `.\setup-windows.ps1 -DemoOnly`；切换到真实识别时再执行一次
-不带 `-DemoOnly` 的安装命令。
-
-维护者可使用以下命令构建安装包，产物位于 `dist`：
-
-```powershell
-.\build-installer.ps1 -Version <版本号>
-```
-
-构建机需要 Inno Setup 6；最终用户不需要安装 Python、PyQt6 或 Inno Setup。
-
-诊断 WASAPI loopback、录制 2.5 秒并自检 Basic Pitch：
-
-```powershell
-& "$env:LOCALAPPDATA\PianoShadow\venv\Scripts\python.exe" `
-  .\audio_diagnostics.py --record 2.5 --model
-```
-
-运行录制诊断时请让播放器持续播放声音；输出会显示捕获波形的 RMS 和峰值。
-
-### 手动选择识别模型
-
-右键窗口打开“识别模型”菜单，可在运行时切换：
-
-- `Basic Pitch · 快速通用`：CPU/ONNX，延迟低，适用于一般音频。
-- `Piano GPU · 推荐 · 钢琴高精度`：CUDA/PyTorch，使用 2 秒滚动上下文和 0.1 秒采集步进，
-  面向纯钢琴的起音、结束时间、力度和踏板模型。
-
-默认优先启动 `Piano GPU`。如果缺少 PyTorch、CUDA、兼容显卡或模型权重加载失败，
-程序会自动切换到 `Basic Pitch`，UI 模型芯片也会同步恢复为未点亮状态。
-GPU 权重不打包进 EXE。切换 GPU 或下载模型前，程序会明确提示需要 NVIDIA 显卡、
-可用驱动和 CUDA 版 PyTorch。检测到权重缺失时可直接自动下载、校验、安装到约定
-目录；下载器依次尝试项目 GitHub Release、国内 GitHub 加速入口和 Zenodo。无论来源
-如何，完整文件都必须通过固定 SHA-256 校验。也可选择浏览器下载后的本地 `.pth`
-文件，程序会复制到模型目录并执行相同校验。
-安装版会自动检测 `%LOCALAPPDATA%\PianoShadow\venv`：若其中已有可用 CUDA PyTorch，
-程序通过无窗口本地子进程完成 GPU 推理并把音符事件传回悬浮窗，无需在 EXE 中重复
-打包 4GB 以上的 CUDA 运行时。
-托盘菜单提供“下载 Piano GPU 模型”入口。
-状态栏仅显示模型名称，不显示具体 GPU 型号。按下时白键采用高饱和、高反差渐变，
-黑键采用更柔和的玻璃染色；未按下时仍保持真实黑白键外观。
-
-CPU 模式同样采用滚动时序：默认保留约 2 秒上下文、每 0.5 秒推进一次，只发布新增
-起音，并按绝对时间合并窗口重叠检测。相比旧版独立分块，首次响应稍慢，但快速音阶的
-顺序、跨块长音和重复按键更稳定。
-
-GPU 模式需要额外安装 CUDA 版 PyTorch：
-
-```powershell
-.\setup-windows.ps1 -Gpu
-# 或手动安装：
-& "$env:LOCALAPPDATA\PianoShadow\venv\Scripts\python.exe" -m pip install `
-  torch --index-url https://download.pytorch.org/whl/cu124
-```
+如果需要最稳定的置顶和双屏定位，建议直接使用 Windows 安装版或 Windows Python 启动。
 
 ## 常见问题
 
-- **提示未检测到输入**：检查 `pactl list short sources` 中的 monitor，或 Windows
-  默认扬声器；软件会保持运行，可随时修复设备后重新启动。
-- **Basic Pitch 安装慢/装不上**：先用 `requirements-demo.txt` 验证界面；建议使用
-  Python 3.10/3.11，因为部分机器学习依赖对最新 Python 的支持可能滞后。
-- **识别不准**：Basic Pitch 面向多音高转录，混响、鼓点和人声会产生误判。适当提高
-  `--min-amp`、`--min-confidence` 或 `--min-velocity`，并使用干净的钢琴录音。
-- **偶发高音/音符不消失**：程序默认抑制较弱的高次泛音，并限制相邻块重复刷新同一
-  音符。仍有误识别时可尝试 `--min-confidence 0.58 --min-velocity 40`。
-- **CPU 高**：增大 `--chunk`（如 3.5），关闭其他推理任务。UI 仅在动画存在时重绘，
-  推理和采集均在后台线程。
-- **延迟**：模型只加载一次。GPU 模式加载完成后按约 0.1 秒步进更新；CPU 模式首次
-  需要积累约 2 秒滚动上下文，之后默认约每 0.5 秒推进一次，实际延迟还取决于 CPU
-  推理耗时。该软件优先保证音符顺序和跨块稳定性，不定位为毫秒级演奏监听器。
+- 没有声音输入：检查默认扬声器、播放器输出设备、Windows 独占模式或 Linux monitor source。
+- 钢琴识别延迟：CPU 模式需要滚动上下文；GPU 模式加载后更新更快。
+- 二胡滑音识别不稳定：二胡模式是实时音高跟踪，不是转谱；环境底噪、伴奏、人声和混响都会影响主频估计。
+- 二胡空弦不亮：0.6.2 起已加入空弦容差与更快确认逻辑；请确认版本不低于 0.6.2。
+- 听音练习示范不亮键：这是设计，示范只发声，用户作答才点亮。
 
 ## 项目结构
 
 ```text
-piano_shadow/
-  main.py              启动、线程编排、demo
-  audio_capture.py     monitor / WASAPI loopback 捕获
-  transcription.py    Basic Pitch CPU 滚动时序推理
-  piano_transcription.py  Piano GPU 与安装版桥接管理
-  gpu_bridge.py        本机 CUDA Python 音频/音符桥接进程
-  note_model.py        MIDI、音名、88 键映射
-  ui_overlay.py        PyQt6 透明窗、绘制与动效
-  config.py            配置与命令行
-  installer.iss        Windows 安装器定义
-  build-installer.ps1  Windows 安装包构建脚本
+main.py                 启动、托盘、线程编排、demo
+audio_capture.py        系统音频 loopback / monitor 捕获
+transcription.py        Basic Pitch CPU 推理
+piano_transcription.py  Piano GPU 推理与桥接
+erhu_pitch_tracker.py   二胡/单旋律实时 pitch tracker
+erhu_model.py           二胡两弦映射与选弦状态机
+performance.py          演奏模式、键盘映射、听音练习、音源控制
+note_model.py           MIDI、音名、88 键模型
+ui_overlay.py           PyQt6 透明窗、绘制、菜单、动画
+config.py               配置与命令行
+installer.iss           Windows 安装器定义
 ```
 
-运行核心映射测试：
+运行测试：
 
 ```bash
 python -m unittest discover -s tests -v
