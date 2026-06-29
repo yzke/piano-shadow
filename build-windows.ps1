@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.0"
+    [string]$Version = "0.5.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +44,8 @@ try {
         --collect-all basic_pitch `
         --collect-all soundcard `
         --collect-all rtmidi `
+        --collect-all tinysoundfont `
+        --collect-all pyaudio `
         --collect-submodules onnxruntime `
         --exclude-module torch `
         --exclude-module torchlibrosa `

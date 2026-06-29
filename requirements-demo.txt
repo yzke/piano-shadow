@@ -1,2 +1,4 @@
 PyQt6>=6.5,<7
 numpy>=1.23
+tinysoundfont==0.3.7
+pyaudio>=0.2.14,<0.3

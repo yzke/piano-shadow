@@ -108,6 +108,11 @@ class WindowsOverlayTests(unittest.TestCase):
                 "input_mode",
                 "performance_help",
                 "ear_training",
+                "instrument_prev",
+                "instrument_label",
+                "instrument_next",
+                "instrument_reset",
+                "soundfont_manage",
             ),
         )
         self.assertGreater(
@@ -119,6 +124,24 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertTrue(window._performance_help)
         window._activate_control("input_mode")
         self.assertEqual(window._performance.input_mode, "midi")
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_instrument_controls_update_compact_source_label(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        self.assertEqual(window._performance.sound_label, "WIN · 大钢琴")
+        label = window._control_rects()["instrument_label"]
+        self.assertGreater(label.width(), label.height() * 3)
+        window._activate_control("instrument_next")
+        self.assertEqual(window._performance.sound_label, "WIN · 电钢琴")
+        window._activate_control("instrument_prev")
+        self.assertEqual(window._performance.sound_label, "WIN · 大钢琴")
+        window._activate_control("instrument_next")
+        window._activate_control("instrument_reset")
+        self.assertEqual(window._performance.sound_label, "WIN · 大钢琴")
+        self.assertEqual(window._instrument_index, 0)
+        self.assertEqual(window._sound_source, "windows")
         window._toggle_performance_mode(False)
         window.close()
 
@@ -244,15 +267,24 @@ class WindowsOverlayTests(unittest.TestCase):
             first._active_opacity = 0.70
             first._scale_percent = 120
             first._show_status = False
+            first._instrument_index = 5
+            first._sound_source = "soundfont"
             first.save_settings()
             first.close()
 
             restored = OverlayWindow(AppConfig(demo_mode=True))
-            restored.restore_settings()
+            with patch.object(
+                OverlayWindow,
+                "_soundfont_is_installed",
+                return_value=True,
+            ):
+                restored.restore_settings()
             self.assertEqual(restored._opacity, 0.20)
             self.assertEqual(restored._active_opacity, 0.70)
             self.assertEqual(restored._scale_percent, 120)
             self.assertFalse(restored._show_status)
+            self.assertEqual(restored._instrument_index, 5)
+            self.assertEqual(restored._sound_source, "soundfont")
             restored.close()
 
     def test_model_download_worker_installs_verified_file(self):
@@ -279,6 +311,37 @@ class WindowsOverlayTests(unittest.TestCase):
                 ),
             ):
                 window._download_model_worker(
+                    target, partial, (source.as_uri(),)
+                )
+            self.app.processEvents()
+            self.assertEqual(target.read_bytes(), payload)
+            self.assertEqual(results, [(True, str(target))])
+        window.close()
+
+    def test_soundfont_download_worker_installs_verified_file(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window.soundfont_download_finished_received.disconnect(
+            window._finish_soundfont_download
+        )
+        results = []
+        window.soundfont_download_finished_received.connect(
+            lambda success, message: results.append((success, message))
+        )
+        payload = b"piano-shadow-test-soundfont"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.sf2"
+            target = root / "soundfonts" / "target.sf2"
+            partial = target.with_suffix(".sf2.part")
+            source.write_bytes(payload)
+            with (
+                patch("ui_overlay.SOUNDFONT_MIN_BYTES", 1),
+                patch(
+                    "ui_overlay.SOUNDFONT_SHA256",
+                    hashlib.sha256(payload).hexdigest(),
+                ),
+            ):
+                window._download_soundfont_worker(
                     target, partial, (source.as_uri(),)
                 )
             self.app.processEvents()

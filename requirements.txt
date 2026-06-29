@@ -4,3 +4,5 @@ soundcard>=0.4.3
 basic-pitch>=0.3.0
 piano-transcription-inference>=0.0.6
 python-rtmidi>=1.5.8,<2
+tinysoundfont==0.3.7
+pyaudio>=0.2.14,<0.3

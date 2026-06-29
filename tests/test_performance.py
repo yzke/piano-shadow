@@ -5,6 +5,7 @@ from unittest.mock import patch
 from performance import (
     EAR_TRAINING_LEVELS,
     EarTrainingSession,
+    INSTRUMENTS,
     KEY_ROWS,
     MAJOR_INTERVALS,
     MAJOR_ROOTS,
@@ -26,6 +27,9 @@ class FakeSynth:
     def note_off(self, midi):
         self.events.append(("off", midi))
 
+    def set_program(self, program):
+        self.events.append(("program", program))
+
     def sustain(self, enabled):
         self.events.append(("sustain", enabled))
 
@@ -42,6 +46,13 @@ class FakeMidi:
 
     def close(self):
         pass
+
+
+class FakeSoundFontSynth(FakeSynth):
+    def __init__(self, path, program=0):
+        super().__init__()
+        self.path = path
+        self.set_program(program)
 
 
 class PerformanceTests(unittest.TestCase):
@@ -75,18 +86,14 @@ class PerformanceTests(unittest.TestCase):
     def test_scale_sequence_moves_both_directions(self):
         controller, _ = self.create_controller()
         controller.shift_scale(1)
-        self.assertEqual(controller.scale_name, "A 小调")
-        controller.shift_scale(1)
-        self.assertEqual(controller.scale_name, "G 大调")
+        self.assertEqual(controller.scale_name, "G 大调 / E 小调")
         self.assertEqual(controller.midi_for_key("Q"), 67)
         self.assertEqual(controller.midi_for_key("Q", 1), 68)
         self.assertEqual(controller.midi_for_key("Q", -1), 66)
         controller.shift_scale(-1)
-        self.assertEqual(controller.scale_name, "A 小调")
+        self.assertEqual(controller.scale_name, "C 大调 / A 小调")
         controller.shift_scale(-1)
-        self.assertEqual(controller.scale_name, "C 大调")
-        controller.shift_scale(-1)
-        self.assertEqual(controller.scale_name, "D 小调")
+        self.assertEqual(controller.scale_name, "F 大调 / D 小调")
 
     def test_every_extended_key_is_correct_in_every_scale(self):
         controller, _ = self.create_controller()
@@ -112,8 +119,8 @@ class PerformanceTests(unittest.TestCase):
 
     def test_scale_sequence_is_complete_and_reversible(self):
         controller, _ = self.create_controller()
-        self.assertEqual(len(SCALE_SEQUENCE), 24)
-        self.assertEqual(len(set(SCALE_SEQUENCE)), 24)
+        self.assertEqual(len(SCALE_SEQUENCE), 12)
+        self.assertEqual(len(set(SCALE_SEQUENCE)), 12)
         visited = []
         for _ in SCALE_SEQUENCE:
             visited.append((controller.mode, controller.scale_index))
@@ -136,18 +143,18 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(
             names,
             [
-                "C 大调", "A 小调",
-                "G 大调", "E 小调",
-                "D 大调", "B 小调",
-                "A 大调", "F♯ 小调",
-                "E 大调", "C♯ 小调",
-                "B 大调", "G♯ 小调",
-                "F♯ 大调", "D♯ 小调",
-                "D♭ 大调", "B♭ 小调",
-                "A♭ 大调", "F 小调",
-                "E♭ 大调", "C 小调",
-                "B♭ 大调", "G 小调",
-                "F 大调", "D 小调",
+                "C 大调 / A 小调",
+                "G 大调 / E 小调",
+                "D 大调 / B 小调",
+                "A 大调 / F♯ 小调",
+                "E 大调 / C♯ 小调",
+                "B 大调 / G♯ 小调",
+                "F♯ 大调 / D♯ 小调",
+                "D♭ 大调 / B♭ 小调",
+                "A♭ 大调 / F 小调",
+                "E♭ 大调 / C 小调",
+                "B♭ 大调 / G 小调",
+                "F 大调 / D 小调",
             ],
         )
 
@@ -176,6 +183,37 @@ class PerformanceTests(unittest.TestCase):
         controller._midi_note_on(67, 88)
         self.assertNotIn(("on", 67, 88), controller.synth.events)
 
+    def test_instrument_navigation_updates_general_midi_program(self):
+        controller, _ = self.create_controller()
+        self.assertEqual(controller.sound_label, "WIN · 大钢琴")
+        self.assertEqual(controller.shift_instrument(1), "电钢琴")
+        self.assertEqual(controller.instrument_program, 4)
+        self.assertIn(("program", 4), controller.synth.events)
+        controller.shift_instrument(-1)
+        self.assertEqual(controller.instrument_name, "大钢琴")
+        controller.shift_instrument(-1)
+        self.assertEqual(
+            controller.instrument_name,
+            INSTRUMENTS[-1][1],
+        )
+
+    def test_soundfont_source_switch_preserves_instrument(self):
+        with (
+            patch("performance.WinMmPianoSynth", FakeSynth),
+            patch("performance.SoundFontSynth", FakeSoundFontSynth),
+            patch("performance.MidiInput", FakeMidi),
+        ):
+            controller = PerformanceController(
+                lambda _midi, _velocity: None,
+                instrument_index=3,
+            )
+            self.assertTrue(controller.use_soundfont("test.sf2"))
+            self.assertEqual(controller.sound_source, "soundfont")
+            self.assertEqual(controller.instrument_program, 16)
+            self.assertIn(("program", 16), controller.synth.events)
+            self.assertTrue(controller.use_windows())
+            self.assertEqual(controller.sound_source, "windows")
+
     def test_ear_training_cycles_all_levels_and_closes(self):
         session = EarTrainingSession(random.Random(4))
         levels = [session.cycle_level() for _ in range(5)]
@@ -187,21 +225,22 @@ class PerformanceTests(unittest.TestCase):
         observed = set()
         for level in (1, 3, 5, 7):
             session.note_count = level
-            for mode, scale_index in SCALE_SEQUENCE:
-                roots = MAJOR_ROOTS if mode == "major" else MINOR_ROOTS
-                intervals = MAJOR_INTERVALS if mode == "major" else MINOR_INTERVALS
-                allowed_pitch_classes = {
-                    (roots[scale_index] + interval) % 12
-                    for interval in intervals
-                }
-                for _ in range(25):
-                    target = session.new_question(mode, scale_index)
-                    self.assertEqual(len(target), level)
-                    self.assertTrue(all(21 <= midi <= 108 for midi in target))
-                    self.assertTrue(
-                        all(midi % 12 in allowed_pitch_classes for midi in target)
-                    )
-                    observed.update(target)
+            for mode in ("major", "minor"):
+                for scale_index in range(len(MAJOR_ROOTS)):
+                    roots = MAJOR_ROOTS if mode == "major" else MINOR_ROOTS
+                    intervals = MAJOR_INTERVALS if mode == "major" else MINOR_INTERVALS
+                    allowed_pitch_classes = {
+                        (roots[scale_index] + interval) % 12
+                        for interval in intervals
+                    }
+                    for _ in range(25):
+                        target = session.new_question(mode, scale_index)
+                        self.assertEqual(len(target), level)
+                        self.assertTrue(all(21 <= midi <= 108 for midi in target))
+                        self.assertTrue(
+                            all(midi % 12 in allowed_pitch_classes for midi in target)
+                        )
+                        observed.update(target)
         self.assertLess(min(observed), 48)
         self.assertGreater(max(observed), 96)
         self.assertGreater(len(observed), 45)

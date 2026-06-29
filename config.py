@@ -27,6 +27,7 @@ APP_DATA_DIR = (
     / "PianoShadow"
 )
 MODEL_DIR = APP_DATA_DIR / "models"
+SOUNDFONT_DIR = APP_DATA_DIR / "soundfonts"
 LOG_DIR = APP_DATA_DIR / "logs"
 PIANO_MODEL_FILENAME = "note_F1=0.9677_pedal_F1=0.9186.pth"
 PIANO_MODEL_PATH = MODEL_DIR / PIANO_MODEL_FILENAME
@@ -35,11 +36,27 @@ LEGACY_PIANO_MODEL_PATH = (
 )
 PIANO_MODEL_MIN_BYTES = 160_000_000
 PIANO_MODEL_SHA256 = "c3fa9730725bf4a762f1c14bc80cd5986eacda01b026f5a4a2525cd607876141"
+SOUNDFONT_FILENAME = "GeneralUser-GS.sf2"
+SOUNDFONT_PATH = SOUNDFONT_DIR / SOUNDFONT_FILENAME
+SOUNDFONT_PRIMARY_URL = (
+    "https://raw.githubusercontent.com/mrbumpy409/GeneralUser-GS/"
+    "684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2"
+)
+SOUNDFONT_URLS = (
+    f"https://ghfast.top/{SOUNDFONT_PRIMARY_URL}",
+    f"https://gh-proxy.com/{SOUNDFONT_PRIMARY_URL}",
+    SOUNDFONT_PRIMARY_URL,
+    "https://github.com/mrbumpy409/GeneralUser-GS/raw/"
+    "684543d5e5efaef08d02be50dcda8d552478fa60/GeneralUser-GS.sf2",
+)
+SOUNDFONT_MIN_BYTES = 32_000_000
+SOUNDFONT_SHA256 = "9575028c7a1f589f5770fccc8cff2734566af40cd26ed836944e9a5152688cfe"
 
 
 def ensure_data_layout() -> None:
     """Create writable per-user directories and preserve an existing model."""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    SOUNDFONT_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     if not PIANO_MODEL_PATH.exists() and LEGACY_PIANO_MODEL_PATH.exists():
         os.replace(LEGACY_PIANO_MODEL_PATH, PIANO_MODEL_PATH)

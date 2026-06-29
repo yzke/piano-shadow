@@ -53,7 +53,15 @@ from PyQt6.QtWidgets import (
     QWidgetAction,
 )
 
-from config import AppConfig, PIANO_MODEL_MIN_BYTES, PIANO_MODEL_PATH
+from config import (
+    AppConfig,
+    PIANO_MODEL_MIN_BYTES,
+    PIANO_MODEL_PATH,
+    SOUNDFONT_MIN_BYTES,
+    SOUNDFONT_PATH,
+    SOUNDFONT_SHA256,
+    SOUNDFONT_URLS,
+)
 from note_model import (
     NoteEvent,
     PIANO_HIGH,
@@ -61,7 +69,12 @@ from note_model import (
     is_black_key,
     midi_to_name,
 )
-from performance import MAJOR_ROOTS, MINOR_ROOTS, PerformanceController
+from performance import (
+    INSTRUMENTS,
+    MAJOR_ROOTS,
+    MINOR_ROOTS,
+    PerformanceController,
+)
 
 # Stable pitch-class colors across every octave: C4 and C7, for example,
 # always share the same color. Sharps receive their own intermediate hue.
@@ -106,6 +119,8 @@ class OverlayWindow(QWidget):
     performance_mode_changed = pyqtSignal(bool)
     performance_note_received = pyqtSignal(int, int)
     performance_answer_received = pyqtSignal(int)
+    soundfont_download_progress_received = pyqtSignal(int, int)
+    soundfont_download_finished_received = pyqtSignal(bool, str)
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -121,6 +136,8 @@ class OverlayWindow(QWidget):
         self._performance_mode = False
         self._performance_help = False
         self._performance: PerformanceController | None = None
+        self._sound_source = "windows"
+        self._instrument_index = 0
         self._ear_playback_generation = 0
         self._ear_feedback_target: tuple[int, ...] = ()
         self._ear_feedback_error: tuple[int, int, int] | None = None
@@ -131,6 +148,9 @@ class OverlayWindow(QWidget):
         self._model_download_thread: threading.Thread | None = None
         self._model_download_cancel = threading.Event()
         self._model_download_progress: QProgressDialog | None = None
+        self._soundfont_download_thread: threading.Thread | None = None
+        self._soundfont_download_cancel = threading.Event()
+        self._soundfont_download_progress: QProgressDialog | None = None
         self._show_status = True
         self._opacity = 0.85
         self._active_opacity = 0.85
@@ -151,6 +171,12 @@ class OverlayWindow(QWidget):
         )
         self.performance_note_received.connect(self._show_performance_note)
         self.performance_answer_received.connect(self._handle_ear_answer)
+        self.soundfont_download_progress_received.connect(
+            self._update_soundfont_download_progress
+        )
+        self.soundfont_download_finished_received.connect(
+            self._finish_soundfont_download
+        )
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
@@ -382,24 +408,26 @@ class OverlayWindow(QWidget):
             for index, name in enumerate(primary)
         }
         if self._performance_mode:
-            secondary = ("input_mode", "performance_help", "ear_training")
-            secondary_start = (
-                self.width()
-                - 20.0
-                - len(secondary) * size
-                - (len(secondary) - 1) * gap
+            secondary = (
+                ("input_mode", size),
+                ("performance_help", size),
+                ("ear_training", size),
+                ("instrument_prev", size),
+                ("instrument_label", max(94.0, size * 3.7)),
+                ("instrument_next", size),
+                ("instrument_reset", size),
+                ("soundfont_manage", size),
             )
-            controls.update(
-                {
-                    name: QRectF(
-                        secondary_start + index * (size + gap),
-                        16.0 + size + gap,
-                        size,
-                        size,
-                    )
-                    for index, name in enumerate(secondary)
-                }
+            total_width = (
+                sum(width for _name, width in secondary)
+                + (len(secondary) - 1) * gap
             )
+            x = self.width() - 20.0 - total_width
+            for name, width in secondary:
+                controls[name] = QRectF(
+                    x, 16.0 + size + gap, width, size
+                )
+                x += width + gap
         return controls
 
     def _draw_performance_status(self, p: QPainter) -> None:
@@ -419,7 +447,7 @@ class OverlayWindow(QWidget):
         p.setFont(title_font)
         p.setPen(color)
         p.drawText(
-            QRectF(24, 43, 170, 23),
+            QRectF(24, 43, 230, 23),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             f"当前 · {controller.scale_name}",
         )
@@ -537,6 +565,11 @@ class OverlayWindow(QWidget):
                     and self._performance is not None
                     and self._performance.input_mode == "midi"
                 )
+                or (
+                    name == "instrument_label"
+                    and self._performance is not None
+                    and self._performance.sound_source == "soundfont"
+                )
             )
             p.setPen(QPen(QColor(132, 208, 246, 105) if active else QColor(255, 255, 255, 25)))
             p.setBrush(QColor(61, 139, 186, 90) if active else QColor(19, 29, 45, 155))
@@ -596,6 +629,74 @@ class OverlayWindow(QWidget):
                 QRectF(cx - 0.1 * unit, cy - 0.1 * unit, 3.0 * unit, 2.7 * unit),
                 Qt.AlignmentFlag.AlignCenter,
                 str(level) if level else "×",
+            )
+        elif name == "instrument_label":
+            font = QFont(
+                "Inter, Noto Sans CJK SC, sans-serif",
+                max(7, round(rect.height() * 0.31)),
+            )
+            font.setWeight(QFont.Weight.DemiBold)
+            p.setFont(font)
+            text = (
+                self._performance.sound_label
+                if self._performance is not None
+                else "WIN · 大钢琴"
+            )
+            p.drawText(
+                rect.adjusted(7, 0, -7, 0),
+                Qt.AlignmentFlag.AlignCenter,
+                text,
+            )
+        elif name in {"instrument_prev", "instrument_next"}:
+            direction = -1 if name == "instrument_prev" else 1
+            p.drawLine(
+                QLineF(
+                    cx - direction * 0.9 * unit,
+                    cy - 1.7 * unit,
+                    cx + direction * 0.9 * unit,
+                    cy,
+                )
+            )
+            p.drawLine(
+                QLineF(
+                    cx + direction * 0.9 * unit,
+                    cy,
+                    cx - direction * 0.9 * unit,
+                    cy + 1.7 * unit,
+                )
+            )
+        elif name == "instrument_reset":
+            arc = QRectF(
+                cx - 2.0 * unit,
+                cy - 2.0 * unit,
+                4.0 * unit,
+                4.0 * unit,
+            )
+            p.drawArc(arc, 35 * 16, 285 * 16)
+            p.drawLine(
+                QLineF(
+                    cx - 2.0 * unit,
+                    cy - 0.2 * unit,
+                    cx - 2.5 * unit,
+                    cy - 1.5 * unit,
+                )
+            )
+            p.drawLine(
+                QLineF(
+                    cx - 2.0 * unit,
+                    cy - 0.2 * unit,
+                    cx - 0.7 * unit,
+                    cy - 0.7 * unit,
+                )
+            )
+        elif name == "soundfont_manage":
+            p.drawLine(QLineF(cx, cy - 2.5 * unit, cx, cy + 0.8 * unit))
+            p.drawLine(QLineF(cx, cy + 0.8 * unit, cx - 1.2 * unit, cy - 0.4 * unit))
+            p.drawLine(QLineF(cx, cy + 0.8 * unit, cx + 1.2 * unit, cy - 0.4 * unit))
+            p.drawRoundedRect(
+                QRectF(cx - 2.2 * unit, cy + 1.2 * unit, 4.4 * unit, 1.3 * unit),
+                0.35 * unit,
+                0.35 * unit,
             )
         elif name == "input_mode":
             if self._performance and self._performance.input_mode == "midi":
@@ -1103,7 +1204,8 @@ class OverlayWindow(QWidget):
         if session.note_count == 0:
             return
         target = session.new_question(
-            self._performance.mode, self._performance.scale_index
+            session.rng.choice(("major", "minor")),
+            self._performance.scale_index,
         )
         self._play_ear_target(target)
 
@@ -1223,7 +1325,11 @@ class OverlayWindow(QWidget):
             self._performance = PerformanceController(
                 self.performance_note_received.emit,
                 self.performance_answer_received.emit,
+                sound_source=self._sound_source,
+                instrument_index=self._instrument_index,
+                soundfont_path=SOUNDFONT_PATH,
             )
+            self._sound_source = self._performance.sound_source
             self._performance.reset()
             self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             self.activateWindow()
@@ -1287,6 +1393,16 @@ class OverlayWindow(QWidget):
             self._cycle_ear_training()
         elif name == "input_mode" and self._performance is not None:
             self._performance.toggle_input_mode()
+        elif name == "instrument_prev":
+            self._shift_instrument(-1)
+        elif name == "instrument_next":
+            self._shift_instrument(1)
+        elif name == "instrument_label":
+            self._toggle_sound_source()
+        elif name == "instrument_reset":
+            self._reset_performance_sound()
+        elif name == "soundfont_manage":
+            self._show_soundfont_manager()
         elif name == "minimal":
             self._toggle_keyboard_only(True)
         elif name == "model":
@@ -1333,6 +1449,61 @@ class OverlayWindow(QWidget):
             self.set_status(f"彩色高亮透明度 {next_level}%", False)
         self.update()
 
+    def _shift_instrument(self, amount: int) -> None:
+        if self._performance is None:
+            return
+        self._performance.shift_instrument(amount)
+        self._instrument_index = self._performance.instrument_index
+        self.set_status(
+            f"音色 · {self._performance.sound_label}",
+            False,
+        )
+        self.update()
+
+    def _toggle_sound_source(self) -> None:
+        if self._performance is None:
+            return
+        if self._performance.sound_source == "soundfont":
+            if self._performance.use_windows():
+                self._sound_source = "windows"
+                self.set_status(
+                    f"音源 · {self._performance.sound_label}",
+                    False,
+                )
+            else:
+                self.set_status("Windows MIDI 音源不可用", True)
+            self.update()
+            return
+        if not self._soundfont_is_installed():
+            self._show_soundfont_manager()
+            return
+        if self._performance.use_soundfont(SOUNDFONT_PATH):
+            self._sound_source = "soundfont"
+            self.set_status(
+                f"音源 · {self._performance.sound_label}",
+                False,
+            )
+        else:
+            self._sound_source = "windows"
+            self.set_status(
+                "SoundFont 播放引擎不可用 · 已保持 Windows 音源",
+                True,
+            )
+        self.update()
+
+    def _reset_performance_sound(self) -> None:
+        if self._performance is None:
+            return
+        self._performance.instrument_index = 0
+        if not self._performance.use_windows():
+            self.set_status("Windows MIDI 音源不可用", True)
+            return
+        self._performance.synth.set_program(0)
+        self._instrument_index = 0
+        self._sound_source = "windows"
+        self.set_status("已恢复默认 · WIN · 大钢琴", False)
+        self.update()
+
     def _show_menu(self, position: QPoint) -> None:
         menu = QMenu(self)
         top = QAction("始终置顶", self, checkable=True, checked=self._always_on_top)
@@ -1347,12 +1518,15 @@ class OverlayWindow(QWidget):
             "演奏模式", self, checkable=True, checked=self._performance_mode
         )
         performance.triggered.connect(self._toggle_performance_mode)
+        soundfont = QAction("音源与 SoundFont…", self)
+        soundfont.triggered.connect(self._show_soundfont_manager)
         quit_action = QAction("退出", self)
         quit_action.triggered.connect(QApplication.quit)
         menu.addAction(top)
         menu.addAction(locked)
         menu.addAction(minimal)
         menu.addAction(performance)
+        menu.addAction(soundfont)
         menu.addSeparator()
         model_menu = menu.addMenu("识别模型")
         model_group = QActionGroup(model_menu)
@@ -1515,9 +1689,9 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.4"}
+                    url, headers={"User-Agent": "PianoShadow/0.5"}
                 )
-                with urllib.request.urlopen(request, timeout=45) as response:
+                with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
                     received = 0
                     with partial.open("wb") as output:
@@ -1604,6 +1778,219 @@ class OverlayWindow(QWidget):
         self._gpu_requirements_confirmed = True
         if self.config.model != "piano-gpu":
             self._select_model("piano-gpu")
+
+    @staticmethod
+    def _soundfont_is_installed() -> bool:
+        return (
+            SOUNDFONT_PATH.exists()
+            and SOUNDFONT_PATH.stat().st_size >= SOUNDFONT_MIN_BYTES
+        )
+
+    def _show_soundfont_manager(self) -> None:
+        installed = self._soundfont_is_installed()
+        box = QMessageBox(self)
+        box.setWindowTitle("Piano Shadow 音源")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(
+            (
+                "GeneralUser GS 已安装。可在 Windows MIDI 与高品质 "
+                "SoundFont 之间切换。"
+                if installed
+                else
+                "可选下载 GeneralUser GS（约 31 MB），提供完整 GM 音色。"
+            )
+            + "<br><br>安装位置：<br>"
+            f"<code>{SOUNDFONT_PATH}</code><br><br>"
+            "音源由 S. Christian Collins 制作，允许随应用免费分发；"
+            "播放引擎 TinySoundFont 使用 MIT 许可证。"
+        )
+        use = None
+        if installed and self._performance is not None:
+            target = (
+                "Windows 默认音源"
+                if self._performance.sound_source == "soundfont"
+                else "GeneralUser GS"
+            )
+            use = box.addButton(
+                f"切换到 {target}",
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+        download = box.addButton(
+            "重新下载并校验" if installed else "下载并安装",
+            QMessageBox.ButtonRole.ActionRole,
+        )
+        remove = (
+            box.addButton("删除 SoundFont", QMessageBox.ButtonRole.DestructiveRole)
+            if installed
+            else None
+        )
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if use is not None and clicked is use:
+            self._toggle_sound_source()
+        elif clicked is download:
+            self._download_soundfont()
+        elif remove is not None and clicked is remove:
+            if (
+                self._performance is not None
+                and self._performance.sound_source == "soundfont"
+            ):
+                self._performance.use_windows()
+            self._sound_source = "windows"
+            try:
+                SOUNDFONT_PATH.unlink(missing_ok=True)
+                self.set_status("GeneralUser GS 已删除 · 使用 Windows 音源", False)
+            except OSError as exc:
+                QMessageBox.warning(self, "删除失败", str(exc))
+            self.update()
+
+    def _download_soundfont(self) -> None:
+        if (
+            self._soundfont_download_thread
+            and self._soundfont_download_thread.is_alive()
+        ):
+            return
+        partial = SOUNDFONT_PATH.with_suffix(".sf2.part")
+        progress = QProgressDialog(
+            "正在下载 GeneralUser GS…", "取消", 0, 100, self
+        )
+        progress.setWindowTitle("Piano Shadow 音源安装")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        self._soundfont_download_progress = progress
+        self._soundfont_download_cancel.clear()
+        progress.canceled.connect(self._soundfont_download_cancel.set)
+        self._soundfont_download_thread = threading.Thread(
+            target=self._download_soundfont_worker,
+            args=(SOUNDFONT_PATH, partial, SOUNDFONT_URLS),
+            name="soundfont-download",
+            daemon=True,
+        )
+        self._soundfont_download_thread.start()
+
+    def _download_soundfont_worker(
+        self, target: Path, partial: Path, sources: tuple[str, ...]
+    ) -> None:
+        errors: list[str] = []
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for url in sources:
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
+            host = urllib.parse.urlparse(url).netloc or "本地文件"
+            try:
+                request = urllib.request.Request(
+                    url, headers={"User-Agent": "PianoShadow/0.5"}
+                )
+                with urllib.request.urlopen(request, timeout=120) as response:
+                    total = int(response.headers.get("Content-Length", "0"))
+                    received = 0
+                    with partial.open("wb") as output:
+                        while not self._soundfont_download_cancel.is_set():
+                            block = response.read(1024 * 1024)
+                            if not block:
+                                break
+                            output.write(block)
+                            received += len(block)
+                            self.soundfont_download_progress_received.emit(
+                                received, total
+                            )
+                if self._soundfont_download_cancel.is_set():
+                    raise RuntimeError("下载已取消")
+                if (
+                    not partial.exists()
+                    or partial.stat().st_size < SOUNDFONT_MIN_BYTES
+                ):
+                    actual = partial.stat().st_size if partial.exists() else 0
+                    raise RuntimeError(
+                        f"文件不完整（收到 {actual / 1048576:.1f} MB）"
+                    )
+                digest = hashlib.sha256()
+                with partial.open("rb") as downloaded:
+                    for block in iter(
+                        lambda: downloaded.read(4 * 1024 * 1024), b""
+                    ):
+                        digest.update(block)
+                if digest.hexdigest() != SOUNDFONT_SHA256:
+                    raise RuntimeError("SoundFont SHA-256 校验失败")
+                os.replace(partial, target)
+                self.soundfont_download_finished_received.emit(
+                    True, str(target)
+                )
+                return
+            except Exception as exc:
+                errors.append(f"{host}: {exc}")
+                if self._soundfont_download_cancel.is_set():
+                    break
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.soundfont_download_finished_received.emit(
+            False, "\n".join(errors)
+        )
+
+    @pyqtSlot(int, int)
+    def _update_soundfont_download_progress(
+        self, received: int, total: int
+    ) -> None:
+        progress = self._soundfont_download_progress
+        if progress is None:
+            return
+        if total > 0:
+            progress.setValue(min(100, round(received * 100 / total)))
+            progress.setLabelText(
+                "正在下载 GeneralUser GS… "
+                f"{received / 1048576:.1f} / {total / 1048576:.1f} MB"
+            )
+        else:
+            progress.setLabelText(
+                f"正在下载 GeneralUser GS… {received / 1048576:.1f} MB"
+            )
+
+    @pyqtSlot(bool, str)
+    def _finish_soundfont_download(
+        self, success: bool, message: str
+    ) -> None:
+        progress = self._soundfont_download_progress
+        self._soundfont_download_progress = None
+        self._soundfont_download_thread = None
+        if progress is not None:
+            progress.close()
+            progress.deleteLater()
+        if not success:
+            QMessageBox.warning(
+                self,
+                "音源下载未完成",
+                f"{message}\n\n当前仍使用 Windows 默认音源。",
+            )
+            return
+        switched = (
+            self._performance is not None
+            and self._performance.use_soundfont(SOUNDFONT_PATH)
+        )
+        if switched:
+            self._sound_source = "soundfont"
+        QMessageBox.information(
+            self,
+            "音源安装完成",
+            "GeneralUser GS 已安装。"
+            + (" 已切换到高品质音源。" if switched else ""),
+        )
+        self.set_status(
+            (
+                f"音源 · {self._performance.sound_label}"
+                if switched and self._performance is not None
+                else "GeneralUser GS 已安装"
+            ),
+            False,
+        )
+        self.update()
 
     def _keyboard_opacity_action(self, menu: QMenu) -> QWidgetAction:
         action = QWidgetAction(menu)
@@ -1728,6 +2115,21 @@ class OverlayWindow(QWidget):
         saved_model = str(settings.value("model", self.config.model))
         if saved_model in {"basic-pitch", "piano-gpu"}:
             self.config.model = saved_model
+        self._instrument_index = max(
+            0,
+            min(
+                len(INSTRUMENTS) - 1,
+                int(settings.value("performance_instrument", 0)),
+            ),
+        )
+        saved_source = str(
+            settings.value("performance_sound_source", "windows")
+        )
+        self._sound_source = (
+            "soundfont"
+            if saved_source == "soundfont" and self._soundfont_is_installed()
+            else "windows"
+        )
         self._always_on_top = settings.value(
             "always_on_top", True, type=bool
         )
@@ -1753,6 +2155,12 @@ class OverlayWindow(QWidget):
         settings.setValue("keyboard_opacity", self._opacity)
         settings.setValue("active_opacity", self._active_opacity)
         settings.setValue("model", self.config.model)
+        settings.setValue(
+            "performance_instrument", self._instrument_index
+        )
+        settings.setValue(
+            "performance_sound_source", self._sound_source
+        )
         settings.setValue("always_on_top", self._always_on_top)
         settings.setValue("position_locked", self._position_locked)
         settings.setValue("keyboard_only", self._keyboard_only)
@@ -1774,6 +2182,12 @@ class OverlayWindow(QWidget):
         self._active_opacity = 0.85
         self._show_status = True
         self._scale_percent = 100
+        self._instrument_index = 0
+        self._sound_source = "windows"
+        if self._performance is not None:
+            self._performance.instrument_index = 0
+            self._performance.use_windows()
+            self._performance.synth.set_program(0)
         self._keyboard_only = False
         self._position_locked = False
         self._toggle_click_through(False)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import random
 from collections.abc import Callable
+from pathlib import Path
 
 
 # Clockwise circle of fifths. Relative major/minor keys share each index so
@@ -29,11 +30,31 @@ KEY_BINDINGS = {
     for degree, key in enumerate(keys)
 }
 SCALE_SEQUENCE = tuple(
-    (mode, index)
+    ("major", index)
     for index in range(len(MAJOR_ROOTS))
-    for mode in ("major", "minor")
 )
 EAR_TRAINING_LEVELS = (0, 1, 3, 5, 7)
+INSTRUMENTS = (
+    (0, "大钢琴"),
+    (4, "电钢琴"),
+    (6, "羽管键琴"),
+    (16, "风琴"),
+    (19, "教堂风琴"),
+    (24, "尼龙吉他"),
+    (25, "钢弦吉他"),
+    (27, "清音电吉他"),
+    (32, "原声贝斯"),
+    (33, "指弹贝斯"),
+    (40, "小提琴"),
+    (42, "大提琴"),
+    (48, "弦乐合奏"),
+    (56, "小号"),
+    (61, "铜管合奏"),
+    (65, "中音萨克斯"),
+    (73, "长笛"),
+    (80, "方波合成器"),
+    (88, "幻想音色"),
+)
 
 
 class EarTrainingSession:
@@ -156,7 +177,7 @@ class EarTrainingSession:
 
 
 class WinMmPianoSynth:
-    """Dependency-free Windows General MIDI piano output."""
+    """Dependency-free Windows General MIDI output."""
 
     def __init__(self) -> None:
         self.available = False
@@ -180,7 +201,7 @@ class WinMmPianoSynth:
             if result != 0:
                 return
             self.available = True
-            self._send(0xC0)  # Acoustic Grand Piano, program 0
+            self.set_program(0)
         except Exception:
             self.available = False
 
@@ -194,6 +215,9 @@ class WinMmPianoSynth:
 
     def note_off(self, midi: int) -> None:
         self._send(0x80, midi, 0)
+
+    def set_program(self, program: int) -> None:
+        self._send(0xC0, program)
 
     def sustain(self, enabled: bool) -> None:
         self._send(0xB0, 64, 127 if enabled else 0)
@@ -209,6 +233,61 @@ class WinMmPianoSynth:
             self.all_notes_off()
             self._winmm.midiOutClose(self._handle)
             self.available = False
+
+
+class SoundFontSynth:
+    """Optional self-contained SoundFont output using TinySoundFont."""
+
+    def __init__(self, path: Path, program: int = 0) -> None:
+        self.available = False
+        self._synth = None
+        try:
+            import tinysoundfont
+
+            synth = tinysoundfont.Synth()
+            self._synth = synth
+            soundfont_id = synth.sfload(str(path))
+            synth.program_select(0, soundfont_id, 0, program)
+            synth.start()
+            self._soundfont_id = soundfont_id
+            self.available = True
+        except Exception:
+            self.close()
+
+    def note_on(self, midi: int, velocity: int) -> None:
+        if self.available:
+            self._synth.noteon(0, midi, velocity)
+
+    def note_off(self, midi: int) -> None:
+        if self.available:
+            self._synth.noteoff(0, midi)
+
+    def set_program(self, program: int) -> None:
+        if self.available:
+            self.all_notes_off()
+            self._synth.program_select(
+                0, self._soundfont_id, 0, max(0, min(127, program))
+            )
+
+    def sustain(self, enabled: bool) -> None:
+        if self.available:
+            self._synth.control_change(0, 64, 127 if enabled else 0)
+
+    def all_notes_off(self) -> None:
+        if self.available:
+            self._synth.control_change(0, 64, 0)
+            self._synth.notes_off(0)
+
+    def close(self) -> None:
+        synth = self._synth
+        self._synth = None
+        self.available = False
+        if synth is not None:
+            try:
+                synth.sounds_off()
+                synth.stop()
+            except Exception:
+                pass
 
 
 class MidiInput:
@@ -266,10 +345,20 @@ class PerformanceController:
         self,
         visual_note: Callable[[int, int], None],
         played_note: Callable[[int], None] | None = None,
+        sound_source: str = "windows",
+        instrument_index: int = 0,
+        soundfont_path: Path | None = None,
     ) -> None:
         self.visual_note = visual_note
         self.played_note = played_note or (lambda _midi: None)
+        self.instrument_index = max(
+            0, min(len(INSTRUMENTS) - 1, instrument_index)
+        )
+        self.sound_source = "windows"
         self.synth = WinMmPianoSynth()
+        self.synth.set_program(self.instrument_program)
+        if sound_source == "soundfont" and soundfont_path is not None:
+            self.use_soundfont(soundfont_path)
         self.mode = "major"
         self.scale_index = 0
         self.octave_shift = 0
@@ -286,8 +375,58 @@ class PerformanceController:
 
     @property
     def scale_name(self) -> str:
-        names = MAJOR_NAMES if self.mode == "major" else MINOR_NAMES
-        return f"{names[self.scale_index]} {'大调' if self.mode == 'major' else '小调'}"
+        return (
+            f"{MAJOR_NAMES[self.scale_index]} 大调 / "
+            f"{MINOR_NAMES[self.scale_index]} 小调"
+        )
+
+    @property
+    def instrument_program(self) -> int:
+        return INSTRUMENTS[self.instrument_index][0]
+
+    @property
+    def instrument_name(self) -> str:
+        return INSTRUMENTS[self.instrument_index][1]
+
+    @property
+    def sound_label(self) -> str:
+        source = "SF2" if self.sound_source == "soundfont" else "WIN"
+        return f"{source} · {self.instrument_name}"
+
+    def shift_instrument(self, amount: int) -> str:
+        self.all_notes_off()
+        self.instrument_index = (
+            self.instrument_index + amount
+        ) % len(INSTRUMENTS)
+        self.synth.set_program(self.instrument_program)
+        return self.instrument_name
+
+    def use_windows(self) -> bool:
+        if self.sound_source == "windows":
+            self.all_notes_off()
+            self.synth.set_program(self.instrument_program)
+            return self.synth.available
+        replacement = WinMmPianoSynth()
+        if not replacement.available:
+            replacement.close()
+            return False
+        replacement.set_program(self.instrument_program)
+        old = self.synth
+        self.synth = replacement
+        self.sound_source = "windows"
+        old.close()
+        return True
+
+    def use_soundfont(self, path: Path) -> bool:
+        replacement = SoundFontSynth(path, self.instrument_program)
+        if not replacement.available:
+            replacement.close()
+            return False
+        old = self.synth
+        self.synth = replacement
+        self.sound_source = "soundfont"
+        old.close()
+        return True
 
     @property
     def scale_notes(self) -> tuple[int, ...]:
@@ -358,12 +497,12 @@ class PerformanceController:
         self.octave_shift = max(-1, min(1, self.octave_shift + amount))
 
     def shift_scale(self, amount: int) -> None:
-        """Move in one predictable sequence containing both major and minor keys."""
+        """Move through relative major/minor pairs on the circle of fifths."""
         self.all_notes_off()
-        current = SCALE_SEQUENCE.index((self.mode, self.scale_index))
-        self.mode, self.scale_index = SCALE_SEQUENCE[
-            (current + amount) % len(SCALE_SEQUENCE)
-        ]
+        self.mode = "major"
+        self.scale_index = (
+            self.scale_index + amount
+        ) % len(MAJOR_ROOTS)
 
     def toggle_input_mode(self) -> str:
         self.all_notes_off()
