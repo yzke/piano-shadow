@@ -272,6 +272,67 @@ class WindowsOverlayTests(unittest.TestCase):
         window._toggle_performance_mode(False)
         window.close()
 
+    def test_piano_alt_and_alt_space_control_missing_pedals(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        events = []
+        window._performance.synth.control_change = (
+            lambda controller, value: events.append((controller, value))
+        )
+        window.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Alt,
+                Qt.KeyboardModifier.AltModifier,
+            )
+        )
+        self.assertIn((67, 127), events)
+        window.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Space,
+                Qt.KeyboardModifier.AltModifier,
+            )
+        )
+        self.assertIn((66, 127), events)
+        window.keyReleaseEvent(
+            QKeyEvent(
+                QEvent.Type.KeyRelease,
+                Qt.Key.Key_Space,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertIn((66, 0), events)
+        window.keyReleaseEvent(
+            QKeyEvent(
+                QEvent.Type.KeyRelease,
+                Qt.Key.Key_Alt,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertIn((67, 0), events)
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_help_text_tracks_current_instrument_technique(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        self.assertIn(
+            "选择性延音",
+            window._performance_help_text(window._performance),
+        )
+        window._performance.instrument_index = next(
+            index
+            for index, (program, _name) in enumerate(INSTRUMENTS)
+            if program == 16
+        )
+        self.assertIn(
+            "Leslie",
+            window._performance_help_text(window._performance),
+        )
+        window._toggle_performance_mode(False)
+        window.close()
+
     def test_extended_performance_keys_use_physical_key_codes(self):
         cases = (
             (Qt.Key.Key_F12, "F12"),

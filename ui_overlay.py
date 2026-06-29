@@ -144,6 +144,7 @@ class OverlayWindow(QWidget):
         self._ear_feedback_correct = False
         self._vibrato_phase = 0.0
         self._glide_generation = 0
+        self._space_sostenuto = False
         self._click_through = False
         self._model_download_prompt_shown = False
         self._gpu_requirements_confirmed = False
@@ -472,17 +473,48 @@ class OverlayWindow(QWidget):
             p.drawText(
                 help_rect.adjusted(10, 4, -10, -4),
                 Qt.AlignmentFlag.AlignCenter,
-                (
-                    "二胡近似：Space 揉弦 · Alt+目标音 滑音 · Enter 休止\n"
-                    "每排前 7 键为音阶，右侧顺延高八度 · ←→ 五度圈"
-                    if controller.expressive_strings
-                    else
-                    "每排前 7 键为一组音阶，右侧按键顺延至高八度\n"
-                    "← 上一个调  → 下一个调  ↑↓ 八度\n"
-                    "Shift 升音  Ctrl 降音  Space 延音  Enter 休止"
-                ),
+                self._performance_help_text(controller),
             )
         p.restore()
+
+    @staticmethod
+    def _performance_help_text(controller: PerformanceController) -> str:
+        common = "Shift/Ctrl 升降半音 · ←→ 五度圈 · ↑↓ 八度"
+        profile = controller.technique_profile
+        if profile == "piano":
+            return (
+                "钢琴踏板：Space 延音 · Alt 弱音 · Alt+Space 选择性延音\n"
+                "选择性延音仅保持组合键按下时已经发声的音\n"
+                f"{common} · Enter 休止"
+            )
+        if profile == "organ":
+            return (
+                "风琴：按住 Alt 加速 Leslie/调制，松开恢复\n"
+                "风琴不模拟钢琴延音踏板\n"
+                f"{common} · Enter 休止"
+            )
+        if profile == "guitar":
+            return (
+                "吉他/贝斯：保持当前音，Alt+目标音 滑弦/推弦（一个八度内）\n"
+                "Space 延音 · Enter 休止\n"
+                f"{common}"
+            )
+        if profile in {"strings", "winds", "synth"}:
+            technique = {
+                "strings": "弦乐/二胡",
+                "winds": "管乐",
+                "synth": "合成器",
+            }[profile]
+            return (
+                f"{technique}：Space 揉弦/颤音，松开回正\n"
+                "保持当前音，按住左/右 Alt 再按目标音滑音（一个八度内）\n"
+                f"{common} · Enter 休止"
+            )
+        return (
+            "每排前 7 键为一组音阶，右侧按键顺延至高八度\n"
+            "Space 延音 · Enter 休止\n"
+            f"{common}"
+        )
 
     def _draw_ear_feedback(self, p: QPainter) -> None:
         if not self._ear_feedback_target:
@@ -1127,9 +1159,23 @@ class OverlayWindow(QWidget):
             event.accept()
             return
         key = event.key()
-        if key == Qt.Key.Key_Space:
-            if controller.expressive_strings:
+        if key == Qt.Key.Key_Alt:
+            if controller.technique_profile == "piano":
+                controller.set_soft(True)
+            elif controller.technique_profile == "organ":
+                controller.set_organ_modulation(True)
+        elif key == Qt.Key.Key_Space:
+            alt = bool(
+                event.modifiers() & Qt.KeyboardModifier.AltModifier
+            )
+            if controller.technique_profile == "piano" and alt:
+                controller.set_soft(False)
+                controller.set_sostenuto(True)
+                self._space_sostenuto = True
+            elif controller.supports_vibrato:
                 self._start_vibrato()
+            elif controller.technique_profile == "organ":
+                pass
             else:
                 controller.set_sustain(True)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -1156,7 +1202,7 @@ class OverlayWindow(QWidget):
                 alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
                 glide = (
                     controller.begin_glide(token, accidental)
-                    if alt and controller.expressive_strings
+                    if alt and controller.supports_glide
                     else None
                 )
                 if glide is not None:
@@ -1176,9 +1222,19 @@ class OverlayWindow(QWidget):
         if self._performance.input_mode != "keyboard":
             event.accept()
             return
-        if event.key() == Qt.Key.Key_Space:
-            if self._performance.expressive_strings:
+        if event.key() == Qt.Key.Key_Alt:
+            if self._performance.technique_profile == "piano":
+                self._performance.set_soft(False)
+            elif self._performance.technique_profile == "organ":
+                self._performance.set_organ_modulation(False)
+        elif event.key() == Qt.Key.Key_Space:
+            if self._space_sostenuto:
+                self._performance.set_sostenuto(False)
+                self._space_sostenuto = False
+            elif self._performance.supports_vibrato:
                 self._stop_vibrato()
+            elif self._performance.technique_profile == "organ":
+                pass
             else:
                 self._performance.set_sustain(False)
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -1191,13 +1247,13 @@ class OverlayWindow(QWidget):
         event.accept()
 
     def _start_vibrato(self) -> None:
-        if self._performance is None or not self._performance.expressive_strings:
+        if self._performance is None or not self._performance.supports_vibrato:
             return
         self._vibrato_phase = 0.0
         self._vibrato_timer.start()
 
     def _vibrato_tick(self) -> None:
-        if self._performance is None or not self._performance.expressive_strings:
+        if self._performance is None or not self._performance.supports_vibrato:
             self._stop_vibrato()
             return
         self._vibrato_phase += 1.1
@@ -1399,6 +1455,7 @@ class OverlayWindow(QWidget):
         self._performance_help = False
         self._glide_generation += 1
         self._stop_vibrato()
+        self._space_sostenuto = False
         self._ear_playback_generation += 1
         self._clear_ear_feedback()
         self.visual_notes.clear()
@@ -1536,6 +1593,7 @@ class OverlayWindow(QWidget):
             return
         self._glide_generation += 1
         self._stop_vibrato()
+        self._space_sostenuto = False
         self._performance.shift_instrument(amount)
         self._instrument_index = self._performance.instrument_index
         self.set_status(
@@ -1580,6 +1638,7 @@ class OverlayWindow(QWidget):
             return
         self._glide_generation += 1
         self._stop_vibrato()
+        self._space_sostenuto = False
         self._performance.instrument_index = 0
         if not self._performance.use_windows():
             self.set_status("Windows MIDI 音源不可用", True)
@@ -1775,7 +1834,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.5"}
+                    url, headers={"User-Agent": "PianoShadow/0.5.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -1971,7 +2030,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.5"}
+                    url, headers={"User-Agent": "PianoShadow/0.5.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))

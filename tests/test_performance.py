@@ -36,6 +36,9 @@ class FakeSynth:
     def pitch_bend(self, value):
         self.events.append(("bend", value))
 
+    def control_change(self, controller, value):
+        self.events.append(("cc", controller, value))
+
     def sustain(self, enabled):
         self.events.append(("sustain", enabled))
 
@@ -238,6 +241,38 @@ class PerformanceTests(unittest.TestCase):
         self.assertIn(("bend", 8700), controller.synth.events)
         self.assertIn(("off", 60), controller.synth.events)
         self.assertIn(("on", 62, 96), controller.synth.events)
+
+    def test_piano_soft_and_sostenuto_pedals_are_emulated(self):
+        controller, _ = self.create_controller()
+        controller.set_soft(True)
+        controller.press("Q")
+        self.assertIn(("on", 60, 61), controller.synth.events)
+        controller.set_sostenuto(True)
+        controller.release("Q")
+        self.assertNotEqual(controller.synth.events[-1], ("off", 60))
+        controller.set_sostenuto(False)
+        self.assertEqual(controller.synth.events[-1], ("off", 60))
+        self.assertIn(("cc", 67, 127), controller.synth.events)
+        self.assertIn(("cc", 66, 127), controller.synth.events)
+
+    def test_technique_profiles_cover_instrument_families(self):
+        controller, _ = self.create_controller()
+        expected = {
+            0: "piano",
+            16: "organ",
+            24: "guitar",
+            40: "strings",
+            65: "winds",
+            80: "synth",
+            110: "strings",
+        }
+        for program, profile in expected.items():
+            controller.instrument_index = next(
+                index
+                for index, (candidate, _name) in enumerate(INSTRUMENTS)
+                if candidate == program
+            )
+            self.assertEqual(controller.technique_profile, profile)
 
     def test_ear_training_cycles_all_levels_and_closes(self):
         session = EarTrainingSession(random.Random(4))
