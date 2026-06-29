@@ -132,6 +132,56 @@ class ErhuTrail:
     born: float
 
 
+class UnlockButton(QWidget):
+    """Small separate control kept clickable while the main overlay passes through."""
+
+    def __init__(self, owner: "OverlayWindow") -> None:
+        super().__init__(None)
+        self.owner = owner
+        self.setWindowTitle("Piano Shadow Unlock")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setFixedSize(34, 34)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide()
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(3, 3, self.width() - 6, self.height() - 6)
+        p.setPen(QPen(QColor(132, 208, 246, 130), 1.1))
+        p.setBrush(QColor(19, 29, 45, 205))
+        p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
+
+        unit = rect.width() / 8.0
+        cx, cy = rect.center().x(), rect.center().y()
+        p.setPen(QPen(QColor(205, 233, 249, 235), max(1.2, unit * 0.5)))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(
+            QRectF(cx - 2.1 * unit, cy - 0.2 * unit, 4.2 * unit, 3.1 * unit),
+            unit * 0.5,
+            unit * 0.5,
+        )
+        p.drawArc(
+            QRectF(cx - 1.45 * unit, cy - 2.8 * unit, 2.9 * unit, 3.2 * unit),
+            0,
+            180 * 16,
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.owner._keyboard_only:
+                self.owner._toggle_keyboard_only(False)
+            else:
+                self.owner._toggle_position_lock(False)
+            event.accept()
+
+
 class OverlayWindow(QWidget):
     notes_received = pyqtSignal(object)
     pitch_received = pyqtSignal(object)
@@ -187,6 +237,7 @@ class OverlayWindow(QWidget):
         self._glide_generation = 0
         self._space_sostenuto = False
         self._click_through = False
+        self._unlock_button: UnlockButton | None = None
         self._model_download_prompt_shown = False
         self._gpu_requirements_confirmed = False
         self._model_download_thread: threading.Thread | None = None
@@ -199,6 +250,7 @@ class OverlayWindow(QWidget):
         self._active_opacity = 0.85
         self._scale_percent = 100
         self._setup_window()
+        self._unlock_button = UnlockButton(self)
         self.notes_received.connect(self.add_notes)
         self.pitch_received.connect(self.add_pitch)
         self.status_received.connect(self.set_status)
@@ -2658,6 +2710,31 @@ class OverlayWindow(QWidget):
                 return name
         return None
 
+    def _sync_unlock_button(self) -> None:
+        if self._unlock_button is None:
+            return
+        if not self._position_locked:
+            self._unlock_button.hide()
+            return
+        lock_rect = self._control_rects().get("lock")
+        if lock_rect is None:
+            self._unlock_button.hide()
+            return
+        size = max(34, round(lock_rect.width() + 8))
+        self._unlock_button.setFixedSize(size, size)
+        top_left = self.mapToGlobal(
+            QPoint(
+                round(lock_rect.center().x() - size / 2),
+                round(lock_rect.center().y() - size / 2),
+            )
+        )
+        self._unlock_button.move(top_left)
+        self._unlock_button.show()
+        if platform.system() == "Windows":
+            self._unlock_button.raise_()
+            if self._always_on_top:
+                self._set_windows_topmost(True, self._unlock_button)
+
     def _locked_hit_is_interactive(self, point: QPoint) -> bool:
         """Keep only the lock control clickable while the overlay is locked."""
         lock_rect = self._control_rects().get("lock")
@@ -2683,6 +2760,19 @@ class OverlayWindow(QWidget):
             except Exception:
                 pass
         return False, 0
+
+    def moveEvent(self, event) -> None:
+        super().moveEvent(event)
+        self._sync_unlock_button()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._sync_unlock_button()
+
+    def closeEvent(self, event) -> None:
+        if self._unlock_button is not None:
+            self._unlock_button.close()
+        super().closeEvent(event)
 
     def _begin_move(self, event: QMouseEvent) -> None:
         self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -3746,7 +3836,7 @@ class OverlayWindow(QWidget):
             else:
                 self.raise_()
 
-    def _set_windows_topmost(self, enabled: bool) -> None:
+    def _set_windows_topmost(self, enabled: bool, widget: QWidget | None = None) -> None:
         """Use Win32 SetWindowPos without moving or recreating the Qt window."""
         if platform.system() != "Windows":
             return
@@ -3768,8 +3858,9 @@ class OverlayWindow(QWidget):
                 wintypes.UINT,
             )
             set_window_pos.restype = wintypes.BOOL
+            target = widget if widget is not None else self
             result = set_window_pos(
-                wintypes.HWND(int(self.winId())),
+                wintypes.HWND(int(target.winId())),
                 wintypes.HWND(hwnd_topmost if enabled else hwnd_notopmost),
                 0,
                 0,
@@ -3789,6 +3880,7 @@ class OverlayWindow(QWidget):
         self.setCursor(
             Qt.CursorShape.ArrowCursor if enabled else Qt.CursorShape.OpenHandCursor
         )
+        self._sync_unlock_button()
 
     def _toggle_click_through(self, enabled: bool) -> None:
         self._click_through = enabled
@@ -3807,10 +3899,14 @@ class OverlayWindow(QWidget):
                 ex_style = get_style(hwnd, -20)  # GWL_EXSTYLE
                 ws_ex_transparent = 0x00000020
                 ws_ex_layered = 0x00080000
-                # Whole-window WS_EX_TRANSPARENT would also disable the lock
-                # button. Selective passthrough is handled in nativeEvent.
                 ex_style |= ws_ex_layered
-                ex_style &= ~ws_ex_transparent
+                if enabled:
+                    # Real Windows click-through must be applied to the whole
+                    # window. Transparent pixels and HTTRANSPARENT alone are
+                    # not enough once piano keys or the staff are painted.
+                    ex_style |= ws_ex_transparent
+                else:
+                    ex_style &= ~ws_ex_transparent
                 set_style(hwnd, -20, ex_style)
                 set_window_pos = ctypes.windll.user32.SetWindowPos
                 set_window_pos.argtypes = (

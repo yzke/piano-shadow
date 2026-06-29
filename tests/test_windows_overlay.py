@@ -63,13 +63,17 @@ class WindowsOverlayTests(unittest.TestCase):
         window._toggle_position_lock(True)
         self.assertTrue(window._position_locked)
         self.assertTrue(window._click_through)
-        self.assertFalse(get_style(int(window.winId()), -20) & ws_ex_transparent)
+        self.assertTrue(get_style(int(window.winId()), -20) & ws_ex_transparent)
+        self.assertIsNotNone(window._unlock_button)
+        self.assertTrue(window._unlock_button.isVisible())
         lock_center = window._control_rects()["lock"].center().toPoint()
         self.assertTrue(window._locked_hit_is_interactive(lock_center))
         self.assertFalse(window._locked_hit_is_interactive(window.rect().center()))
         window._toggle_position_lock(False)
         self.assertFalse(window._position_locked)
         self.assertFalse(window._click_through)
+        self.assertFalse(get_style(int(window.winId()), -20) & ws_ex_transparent)
+        self.assertFalse(window._unlock_button.isVisible())
         window.close()
 
     def test_model_chip_switches_backend_selection(self):
