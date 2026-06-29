@@ -15,6 +15,7 @@ SWITCH_PENALTY = 8.0
 SWITCH_CONFIRM_FRAMES = 6
 MIN_SWITCH_INTERVAL_SECONDS = 0.180
 OPEN_STRING_BONUS = -1.5
+OPEN_STRING_SWITCH_CONFIRM_FRAMES = 2
 HIGH_POSITION_PENALTY_START = 12.0
 DEAD_ZONE = 0.25
 EMA_ALPHA = 0.25
@@ -103,10 +104,10 @@ class ErhuMapper:
         result: list[ErhuCandidate] = []
         inner_position = midi - INNER_BASE_MIDI
         outer_position = midi - OUTER_BASE_MIDI
-        if 0 <= inner_position <= MAX_POSITION:
-            result.append(ErhuCandidate("inner", inner_position))
-        if 0 <= outer_position <= MAX_POSITION:
-            result.append(ErhuCandidate("outer", outer_position))
+        if -DEAD_ZONE <= inner_position <= MAX_POSITION:
+            result.append(ErhuCandidate("inner", max(0.0, inner_position)))
+        if -DEAD_ZONE <= outer_position <= MAX_POSITION:
+            result.append(ErhuCandidate("outer", max(0.0, outer_position)))
         return result
 
     def map(
@@ -162,7 +163,9 @@ class ErhuMapper:
                 current_cost = self._position_cost(current)
                 best_cost = self._position_cost(best)
                 if best.string_name != last.string_name:
-                    best_cost += SWITCH_PENALTY
+                    best_cost += (
+                        1.5 if self._is_open_string(best) else SWITCH_PENALTY
+                    )
                 improvement = current_cost - best_cost
                 can_switch_by_time = (
                     now - self.last_switch_time >= MIN_SWITCH_INTERVAL_SECONDS
@@ -173,12 +176,17 @@ class ErhuMapper:
                     and confidence >= MIN_SWITCH_CONFIDENCE
                     and can_switch_by_time
                 ):
+                    confirm_frames = (
+                        OPEN_STRING_SWITCH_CONFIRM_FRAMES
+                        if self._is_open_string(best)
+                        else SWITCH_CONFIRM_FRAMES
+                    )
                     if self._pending_string == best.string_name:
                         self._pending_frames += 1
                     else:
                         self._pending_string = best.string_name
                         self._pending_frames = 1
-                    if self._pending_frames >= SWITCH_CONFIRM_FRAMES:
+                    if self._pending_frames >= confirm_frames:
                         chosen = best
                         switch_reason = "confirmed_better_string"
                         self.last_switch_time = now
@@ -227,6 +235,10 @@ class ErhuMapper:
         if item.position > HIGH_POSITION_PENALTY_START:
             cost += item.position - HIGH_POSITION_PENALTY_START
         return cost
+
+    @staticmethod
+    def _is_open_string(item: ErhuCandidate) -> bool:
+        return item.position <= DEAD_ZONE
 
     def reset(self) -> None:
         self.last_state = None

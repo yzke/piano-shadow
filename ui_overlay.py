@@ -2771,7 +2771,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.2"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -2967,7 +2967,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.2"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))

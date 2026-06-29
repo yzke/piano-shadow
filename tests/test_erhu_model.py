@@ -55,6 +55,23 @@ class ErhuMapperTests(unittest.TestCase):
         self.assertTrue(all(state is not None for state in states))
         self.assertEqual({state.string_name for state in states if state}, {"outer"})
 
+    def test_open_string_candidate_tolerates_slightly_flat_pitch(self):
+        mapper = ErhuMapper()
+        candidates = mapper.candidates(68.9)
+        self.assertEqual([item.string_name for item in candidates], ["inner", "outer"])
+        self.assertAlmostEqual(candidates[0].position, 6.9)
+        self.assertEqual(candidates[1].position, 0.0)
+        state = mapper.map(68.9, confidence=0.9, smooth=False)
+        self.assertEqual((state.string_name, state.position), ("outer", 0.0))
+
+    def test_open_string_switch_confirms_quickly(self):
+        mapper = ErhuMapper()
+        mapper.map(67, confidence=0.9, timestamp=0.0, smooth=False)
+        first = mapper.map(69, confidence=0.9, timestamp=0.30, smooth=False)
+        second = mapper.map(69, confidence=0.9, timestamp=0.34, smooth=False)
+        self.assertEqual(first.string_name, "inner")
+        self.assertEqual((second.string_name, second.position), ("outer", 0.0))
+
     def test_low_confidence_does_not_update_target(self):
         mapper = ErhuMapper()
         self.assertIsNone(mapper.map(69, confidence=0.1))
