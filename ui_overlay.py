@@ -1493,6 +1493,67 @@ class OverlayWindow(QWidget):
         # keys covered part of every neighboring white-key glow.
         self._draw_active_center_glows(p, white, black, active)
         self._draw_active_key_edges(p, white, black, active)
+        self._draw_performance_tonic_markers(p, white, black)
+
+    def _draw_performance_tonic_markers(
+        self,
+        p: QPainter,
+        white: dict[int, QRectF],
+        black: dict[int, QRectF],
+    ) -> None:
+        if not self._performance_mode or self._performance is None:
+            return
+        controller = self._performance
+        anchors = controller.tonic_anchor_midis
+        if not anchors:
+            return
+        primary = controller.primary_tonic_midi
+        tonic_color = self._note_color(60 + controller.tonic_pitch_class, 235)
+        font = QFont("Inter, Noto Sans CJK SC, sans-serif", 8)
+        font.setWeight(QFont.Weight.DemiBold)
+        p.save()
+        p.setOpacity(self._active_opacity)
+        p.setFont(font)
+        for midi in anchors:
+            rect = white.get(midi)
+            is_black = False
+            if rect is None:
+                rect = black.get(midi)
+                is_black = rect is not None
+            if rect is None:
+                continue
+            is_primary = midi == primary
+            label = f"1 · {midi_to_name(midi)}" if is_primary else "1"
+            width = 42.0 if is_primary else 18.0
+            height = 15.0 if is_primary else 13.0
+            x = rect.center().x() - width / 2
+            y = (
+                rect.bottom() - height - 4.0
+                if not is_black
+                else rect.top() + 4.0
+            )
+            pill = QRectF(x, y, width, height)
+            fill = QColor(12, 20, 32, 198)
+            edge = QColor(tonic_color)
+            edge.setAlpha(210)
+            p.setPen(QPen(edge, 0.9 if is_primary else 0.7))
+            p.setBrush(fill)
+            p.drawRoundedRect(pill, height / 2, height / 2)
+            p.setPen(tonic_color)
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, label)
+
+            if is_primary:
+                center_x = rect.center().x()
+                p.setPen(QPen(QColor(tonic_color.red(), tonic_color.green(), tonic_color.blue(), 145), 1.2))
+                p.drawLine(
+                    QLineF(
+                        center_x,
+                        rect.top() + 2.0,
+                        center_x,
+                        rect.bottom() - 2.0,
+                    )
+                )
+        p.restore()
 
     def _draw_erhu(self, p: QPainter, now: float) -> None:
         """Draw two pitch-position guides while preserving the overlay controls."""
@@ -2771,7 +2832,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.2"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.3"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -2967,7 +3028,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.2"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.3"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))

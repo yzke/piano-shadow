@@ -519,6 +519,25 @@ class PerformanceController:
         intervals = MAJOR_INTERVALS if self.mode == "major" else MINOR_INTERVALS
         return tuple((roots[self.scale_index] + value) % 12 for value in intervals)
 
+    @property
+    def tonic_pitch_class(self) -> int:
+        roots = MAJOR_ROOTS if self.mode == "major" else MINOR_ROOTS
+        return roots[self.scale_index]
+
+    @property
+    def tonic_anchor_midis(self) -> tuple[int, ...]:
+        root = self.tonic_pitch_class
+        anchors = (
+            base + root + self.octave_shift * 12
+            for _keys, base in KEY_ROWS
+        )
+        return tuple(midi for midi in anchors if 21 <= midi <= 108)
+
+    @property
+    def primary_tonic_midi(self) -> int | None:
+        midi = 60 + self.tonic_pitch_class + self.octave_shift * 12
+        return midi if 21 <= midi <= 108 else None
+
     def reset(self) -> None:
         self.all_notes_off()
         self.mode = "major"
