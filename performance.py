@@ -534,6 +534,16 @@ class PerformanceController:
         return tuple(midi for midi in anchors if 21 <= midi <= 108)
 
     @property
+    def tonic_anchor_keys(self) -> tuple[tuple[str, int], ...]:
+        root = self.tonic_pitch_class
+        anchors: list[tuple[str, int]] = []
+        for keys, base in KEY_ROWS:
+            midi = base + root + self.octave_shift * 12
+            if 21 <= midi <= 108:
+                anchors.append((keys[0], midi))
+        return tuple(anchors)
+
+    @property
     def primary_tonic_midi(self) -> int | None:
         midi = 60 + self.tonic_pitch_class + self.octave_shift * 12
         return midi if 21 <= midi <= 108 else None

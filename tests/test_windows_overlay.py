@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtCore import QEvent, QSettings, Qt
+from PyQt6.QtCore import QEvent, QPointF, QSettings, Qt
 from PyQt6.QtGui import QImage, QKeyEvent, QPainter
 from PyQt6.QtWidgets import QApplication
 
@@ -121,6 +121,7 @@ class WindowsOverlayTests(unittest.TestCase):
                 "input_mode",
                 "performance_help",
                 "ear_training",
+                "performance_nav",
                 "instrument_prev",
                 "instrument_label",
                 "instrument_next",
@@ -137,6 +138,25 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertTrue(window._performance_help)
         window._activate_control("input_mode")
         self.assertEqual(window._performance.input_mode, "midi")
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_performance_nav_control_changes_scale_and_octave(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        rect = window._control_rects()["performance_nav"]
+
+        window._activate_performance_nav(rect.center() + QPointF(rect.width() * 0.36, 0))
+        self.assertEqual(window._performance.scale_name, "G 大调 / E 小调")
+
+        window._activate_performance_nav(rect.center() - QPointF(rect.width() * 0.36, 0))
+        self.assertEqual(window._performance.scale_name, "C 大调 / A 小调")
+
+        window._activate_performance_nav(rect.center() + QPointF(0, rect.height() * 0.36))
+        self.assertEqual(window._performance.octave_shift, 1)
+
+        window._activate_performance_nav(rect.center() - QPointF(0, rect.height() * 0.36))
+        self.assertEqual(window._performance.octave_shift, 0)
         window._toggle_performance_mode(False)
         window.close()
 

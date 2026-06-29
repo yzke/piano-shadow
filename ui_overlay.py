@@ -867,6 +867,7 @@ class OverlayWindow(QWidget):
                 ("input_mode", size),
                 ("performance_help", size),
                 ("ear_training", size),
+                ("performance_nav", size * 1.65),
                 ("instrument_prev", size),
                 ("instrument_label", max(94.0, size * 3.7)),
                 ("instrument_next", size),
@@ -1154,6 +1155,38 @@ class OverlayWindow(QWidget):
                 Qt.AlignmentFlag.AlignCenter,
                 str(level) if level else "×",
             )
+        elif name == "performance_nav":
+            font = QFont("Inter, Arial, sans-serif", max(7, round(unit * 1.7)))
+            font.setWeight(QFont.Weight.Bold)
+            p.setFont(font)
+            left = QRectF(rect.left(), rect.top(), rect.width() * 0.34, rect.height())
+            center = QRectF(
+                rect.left() + rect.width() * 0.34,
+                rect.top(),
+                rect.width() * 0.32,
+                rect.height(),
+            )
+            right = QRectF(
+                rect.left() + rect.width() * 0.66,
+                rect.top(),
+                rect.width() * 0.34,
+                rect.height(),
+            )
+            p.drawText(left, Qt.AlignmentFlag.AlignCenter, "←")
+            p.drawText(right, Qt.AlignmentFlag.AlignCenter, "→")
+            p.drawText(
+                QRectF(center.left(), rect.top() + 0.6 * unit, center.width(), rect.height() * 0.38),
+                Qt.AlignmentFlag.AlignCenter,
+                "↑",
+            )
+            p.drawText(
+                QRectF(center.left(), rect.center().y() - 0.1 * unit, center.width(), rect.height() * 0.42),
+                Qt.AlignmentFlag.AlignCenter,
+                "↓",
+            )
+            p.setPen(QPen(QColor(205, 233, 249, 92), max(0.7, unit * 0.22)))
+            p.drawLine(QLineF(center.left(), rect.top() + 4, center.left(), rect.bottom() - 4))
+            p.drawLine(QLineF(center.right(), rect.top() + 4, center.right(), rect.bottom() - 4))
         elif name == "instrument_label":
             font = QFont(
                 "Inter, Noto Sans CJK SC, sans-serif",
@@ -1504,7 +1537,7 @@ class OverlayWindow(QWidget):
         if not self._performance_mode or self._performance is None:
             return
         controller = self._performance
-        anchors = controller.tonic_anchor_midis
+        anchors = controller.tonic_anchor_keys
         if not anchors:
             return
         primary = controller.primary_tonic_midi
@@ -1512,9 +1545,9 @@ class OverlayWindow(QWidget):
         font = QFont("Inter, Noto Sans CJK SC, sans-serif", 8)
         font.setWeight(QFont.Weight.DemiBold)
         p.save()
-        p.setOpacity(self._active_opacity)
+        p.setOpacity(self._opacity)
         p.setFont(font)
-        for midi in anchors:
+        for key_name, midi in anchors:
             rect = white.get(midi)
             is_black = False
             if rect is None:
@@ -1523,8 +1556,12 @@ class OverlayWindow(QWidget):
             if rect is None:
                 continue
             is_primary = midi == primary
-            label = f"1 · {midi_to_name(midi)}" if is_primary else "1"
-            width = 42.0 if is_primary else 18.0
+            label = (
+                f"{key_name}/{midi_to_name(midi)}"
+                if is_primary
+                else key_name
+            )
+            width = 44.0 if is_primary else max(20.0, 9.5 * len(key_name) + 9.0)
             height = 15.0 if is_primary else 13.0
             x = rect.center().x() - width / 2
             y = (
@@ -1959,6 +1996,10 @@ class OverlayWindow(QWidget):
             control = self._control_at(event.position())
             if control:
                 if not self._control_enabled(control):
+                    event.accept()
+                    return
+                if control == "performance_nav":
+                    self._activate_performance_nav(event.position())
                     event.accept()
                     return
                 self._activate_control(control)
@@ -2481,6 +2522,32 @@ class OverlayWindow(QWidget):
             self.set_status(f"彩色高亮透明度 {next_level}%", False)
         self.update()
 
+    def _activate_performance_nav(self, point: QPointF) -> None:
+        if self._performance is None:
+            return
+        rect = self._control_rects().get("performance_nav")
+        if rect is None:
+            return
+        controller = self._performance
+        dx = point.x() - rect.center().x()
+        dy = point.y() - rect.center().y()
+        if abs(dx) >= abs(dy):
+            controller.shift_scale(1 if dx > 0 else -1)
+            self.set_status(f"演奏调式 · {controller.scale_name}", False)
+            if controller.ear_training.note_count:
+                self._start_ear_question()
+        else:
+            controller.shift_octave(1 if dy > 0 else -1)
+            label = (
+                "高八度"
+                if controller.octave_shift > 0
+                else "低八度"
+                if controller.octave_shift < 0
+                else "默认八度"
+            )
+            self.set_status(f"演奏音区 · {label}", False)
+        self.update()
+
     def _shift_instrument(self, amount: int) -> None:
         if self._performance is None:
             return
@@ -2832,7 +2899,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.3"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.4"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3028,7 +3095,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.3"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.4"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))

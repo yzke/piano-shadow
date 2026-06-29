@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 Piano Shadow is a local desktop music-visualization and performance tool. It started as a translucent piano-note overlay: it captures system audio, uses Piano GPU or Spotify Basic Pitch to transcribe piano notes, and projects recent notes onto an 88-key keyboard. It now also includes computer-keyboard/MIDI performance mode, switchable instruments and sound sources, ear training, piano key/solfege association, and an experimental Erhu Shadow mode for real-time continuous-pitch visualization. It is designed for listening practice, key-position association, and performance assistance, not professional score transcription. Audio stays local; no cloud API is used.
 
-Current version: `0.6.3`
+Current version: `0.6.4`
 
 ## Features
 
@@ -31,11 +31,12 @@ Current version: `0.6.3`
 - `↑ / ↓` shift the whole keyboard range by octave.
 - `Shift` temporarily raises by a semitone; `Ctrl` temporarily lowers by a semitone.
 - `Space` is sustain/vibrato, `Enter` is rest, and `Alt + target note` is glide for instruments that support it.
-- Performance mode marks the current tonic anchor directly on the piano keys:
-  - C key: `1 · C4`
-  - G key: `1 · G4`
-  - F key: `1 · F4`
+- Performance mode marks the current computer-key tonic anchor directly on the piano keys:
+  - C key: `Q/C4`
+  - G key: `Q/G4`
+  - other ranges show row-start keys such as `F1`, `1`, `A`, and `Z`
   - octave shifts move the anchors with the mapping, so scale changes remain readable.
+- Performance mode also adds a compact arrow-pad control: left/right change keys around the circle of fifths, and up/down shift octave.
 
 ### Instruments and sound sources
 
@@ -107,7 +108,7 @@ Older piano overlay screenshots are also kept:
 Download the installer from GitHub Releases:
 
 ```text
-PianoShadow-Setup-v0.6.3-Windows-x64.exe
+PianoShadow-Setup-v0.6.4-Windows-x64.exe
 ```
 
 The installer does not require users to install Python. Default paths:
@@ -155,14 +156,14 @@ The installed app can detect `%LOCALAPPDATA%\PianoShadow\venv` and call the loca
 ### Building on Windows
 
 ```powershell
-.\build-installer.ps1 -Version 0.6.3
+.\build-installer.ps1 -Version 0.6.4
 ```
 
 Requires Inno Setup 6. Outputs are written to `dist`:
 
 ```text
-PianoShadow-v0.6.3-Windows-x64.exe
-PianoShadow-Setup-v0.6.3-Windows-x64.exe
+PianoShadow-v0.6.4-Windows-x64.exe
+PianoShadow-Setup-v0.6.4-Windows-x64.exe
 ```
 
 ## Linux / WSL / source usage

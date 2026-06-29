@@ -108,15 +108,18 @@ class PerformanceTests(unittest.TestCase):
         controller, _ = self.create_controller()
         self.assertEqual(controller.tonic_pitch_class, 0)
         self.assertIn(60, controller.tonic_anchor_midis)
+        self.assertIn(("Q", 60), controller.tonic_anchor_keys)
         self.assertEqual(controller.primary_tonic_midi, 60)
 
         controller.shift_scale(1)
         self.assertEqual(controller.tonic_pitch_class, 7)
         self.assertIn(67, controller.tonic_anchor_midis)
+        self.assertIn(("Q", 67), controller.tonic_anchor_keys)
         self.assertEqual(controller.primary_tonic_midi, 67)
 
         controller.shift_octave(1)
         self.assertIn(79, controller.tonic_anchor_midis)
+        self.assertIn(("Q", 79), controller.tonic_anchor_keys)
         self.assertEqual(controller.primary_tonic_midi, 79)
 
     def test_every_extended_key_is_correct_in_every_scale(self):
