@@ -15,7 +15,7 @@ def main() -> int:
     app = QApplication(sys.argv[:1])
     window = OverlayWindow(AppConfig(demo_mode=True))
     window._set_visual_mode("erhu")
-    window.set_status("Erhu Shadow · v0.6.4 Demo")
+    window.set_status("Erhu Shadow · v0.7.0 Demo")
     window.show()
     demo = DemoPlayer(window, "62;64;66;67;69;71;72;74")
     # Keep Python references alive for the full Qt event loop.

@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 Piano Shadow is a local desktop music-visualization and performance tool. It started as a translucent piano-note overlay: it captures system audio, uses Piano GPU or Spotify Basic Pitch to transcribe piano notes, and projects recent notes onto an 88-key keyboard. It now also includes computer-keyboard/MIDI performance mode, switchable instruments and sound sources, ear training, piano key/solfege association, and an experimental Erhu Shadow mode for real-time continuous-pitch visualization. It is designed for listening practice, key-position association, and performance assistance, not professional score transcription. Audio stays local; no cloud API is used.
 
-Current version: `0.6.4`
+Current version: `0.7.0`
 
 ## Features
 
@@ -69,6 +69,7 @@ Current version: `0.6.4`
 - Recognized notes enter from the right and flow left, giving a quick view of pitch contour.
 - This is not strict rhythmic engraving. It does not treat model note durations as formal notation; it is a live visual trace.
 - Staff lines, clefs, and background follow keyboard opacity. Notes and trails follow the pitch-class color system and active-note opacity.
+- The keyboard base and staff panel share the same frosted-glass style, with a toggle between dark glass and light glass.
 - In keyboard-only / click-through mode, enabled staff lines and notes remain visible while the staff area still passes mouse input through.
 
 ### Erhu Shadow
@@ -104,6 +105,12 @@ These screenshots were captured during development and may not match every pixel
 
 ![Staff Shadow development screenshot](docs/screenshots/staff-shadow.png)
 
+### Frosted glass base styles
+
+![Light frosted-glass staff screenshot](docs/screenshots/glass-light-staff.png)
+
+![Dark frosted-glass staff screenshot](docs/screenshots/glass-dark-staff.png)
+
 ### Erhu Shadow
 
 ![Erhu Shadow development screenshot](docs/screenshots/erhu-shadow.png)
@@ -121,7 +128,7 @@ Older piano overlay screenshots are also kept:
 Download the installer from GitHub Releases:
 
 ```text
-PianoShadow-Setup-v0.6.4-Windows-x64.exe
+PianoShadow-Setup-v0.7.0-Windows-x64.exe
 ```
 
 The installer does not require users to install Python. Default paths:
@@ -169,14 +176,14 @@ The installed app can detect `%LOCALAPPDATA%\PianoShadow\venv` and call the loca
 ### Building on Windows
 
 ```powershell
-.\build-installer.ps1 -Version 0.6.4
+.\build-installer.ps1 -Version 0.7.0
 ```
 
 Requires Inno Setup 6. Outputs are written to `dist`:
 
 ```text
-PianoShadow-v0.6.4-Windows-x64.exe
-PianoShadow-Setup-v0.6.4-Windows-x64.exe
+PianoShadow-v0.7.0-Windows-x64.exe
+PianoShadow-Setup-v0.7.0-Windows-x64.exe
 ```
 
 ## Linux / WSL / source usage

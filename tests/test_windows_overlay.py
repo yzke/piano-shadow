@@ -122,6 +122,7 @@ class WindowsOverlayTests(unittest.TestCase):
                 "active_opacity",
                 "performance",
                 "staff",
+                "glass_theme",
                 "piano_model",
                 "input_mode",
                 "performance_help",
@@ -144,6 +145,16 @@ class WindowsOverlayTests(unittest.TestCase):
         window._activate_control("input_mode")
         self.assertEqual(window._performance.input_mode, "midi")
         window._toggle_performance_mode(False)
+        window.close()
+
+    def test_glass_theme_control_toggles_keyboard_and_staff_base_style(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        self.assertIn("glass_theme", window._control_rects())
+        self.assertEqual(window._glass_theme, "dark")
+        window._activate_control("glass_theme")
+        self.assertEqual(window._glass_theme, "light")
+        window._activate_control("glass_theme")
+        self.assertEqual(window._glass_theme, "dark")
         window.close()
 
     def test_staff_shadow_toggle_extends_window_and_records_notes(self):

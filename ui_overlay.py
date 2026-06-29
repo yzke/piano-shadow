@@ -205,6 +205,7 @@ class OverlayWindow(QWidget):
         self.visual_notes: list[VisualNote] = []
         self.staff_notes: list[StaffNote] = []
         self._staff_enabled = False
+        self._glass_theme = "dark"
         self._visual_mode = "piano"
         self._erhu_mapper = ErhuMapper()
         self._erhu_state: ErhuState | None = None
@@ -519,6 +520,52 @@ class OverlayWindow(QWidget):
         )
         return color
 
+    def _glass_palette(self) -> dict[str, QColor]:
+        if self._glass_theme == "light":
+            return {
+                "top": QColor(255, 255, 255, 86),
+                "mid": QColor(226, 238, 248, 62),
+                "bottom": QColor(190, 206, 220, 76),
+                "edge": QColor(255, 255, 255, 84),
+                "highlight": QColor(255, 255, 255, 76),
+                "shadow": QColor(90, 112, 132, 36),
+                "line": QColor(72, 94, 112, 132),
+                "clef": QColor(60, 84, 104, 170),
+            }
+        return {
+            "top": QColor(32, 45, 62, 106),
+            "mid": QColor(16, 27, 42, 88),
+            "bottom": QColor(4, 8, 16, 106),
+            "edge": QColor(228, 243, 252, 72),
+            "highlight": QColor(255, 255, 255, 42),
+            "shadow": QColor(0, 0, 0, 42),
+            "line": QColor(220, 238, 250, 128),
+            "clef": QColor(224, 240, 250, 178),
+        }
+
+    def _draw_frosted_panel(self, p: QPainter, rect: QRectF, radius: float) -> None:
+        palette = self._glass_palette()
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        fill = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        fill.setColorAt(0.0, palette["top"])
+        fill.setColorAt(0.45, palette["mid"])
+        fill.setColorAt(1.0, palette["bottom"])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawPath(path)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(palette["edge"], 1.0))
+        p.drawPath(path)
+        p.setPen(QPen(palette["highlight"], 0.9))
+        p.drawLine(
+            QLineF(rect.left() + radius, rect.top() + 1.3, rect.right() - radius, rect.top() + 1.3)
+        )
+        p.setPen(QPen(palette["shadow"], 0.9))
+        p.drawLine(
+            QLineF(rect.left() + radius, rect.bottom() - 1.2, rect.right() - radius, rect.bottom() - 1.2)
+        )
+
     @staticmethod
     def _erhu_history_alpha(index: int) -> int:
         """Newest historical erhu note is half opacity; each older note halves again."""
@@ -533,7 +580,7 @@ class OverlayWindow(QWidget):
         return max(9.0, 13.5 - index * 0.75)
 
     def _keyboard_geometry(self) -> tuple[dict[int, QRectF], dict[int, QRectF]]:
-        margin = 20.0
+        margin = 23.0
         keyboard_area_height = self._keyboard_area_height()
         top = keyboard_area_height * 0.58
         height = keyboard_area_height - top - 13
@@ -993,6 +1040,7 @@ class OverlayWindow(QWidget):
             secondary = (
                 ("performance", size),
                 ("staff", size),
+                ("glass_theme", size),
                 ("piano_model", size),
             )
         if self._performance_mode:
@@ -1183,6 +1231,7 @@ class OverlayWindow(QWidget):
                 or (name == "top" and self._always_on_top)
                 or (name == "piano_model" and self.config.model == "piano-gpu")
                 or (name == "staff" and self._staff_enabled)
+                or (name == "glass_theme" and self._glass_theme == "light")
                 or (name == "erhu_rotate" and self._erhu_vertical)
                 or (name == "erhu_history" and self._erhu_history)
                 or (name == "erhu_body" and self._erhu_body)
@@ -1264,6 +1313,19 @@ class OverlayWindow(QWidget):
             p.drawEllipse(QRectF(cx - 0.55 * unit, cy - 0.95 * unit, 1.1 * unit, 0.8 * unit))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawLine(QLineF(cx + 0.55 * unit, cy - 0.55 * unit, cx + 0.55 * unit, cy - 2.25 * unit))
+        elif name == "glass_theme":
+            panel = QRectF(cx - 2.35 * unit, cy - 1.7 * unit, 4.7 * unit, 3.4 * unit)
+            p.drawRoundedRect(panel, 1.0 * unit, 1.0 * unit)
+            if self._glass_theme == "light":
+                p.setBrush(QColor(235, 247, 255, 185))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QRectF(cx - 1.05 * unit, cy - 1.05 * unit, 2.1 * unit, 2.1 * unit))
+            else:
+                p.setBrush(QColor(205, 233, 249, 65))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawEllipse(QRectF(cx - 1.05 * unit, cy - 1.05 * unit, 2.1 * unit, 2.1 * unit))
+                p.setBrush(QColor(19, 29, 45, 210))
+                p.drawEllipse(QRectF(cx - 0.25 * unit, cy - 1.05 * unit, 2.1 * unit, 2.1 * unit))
         elif name == "visual_mode":
             font = QFont(
                 "Inter, Noto Sans CJK SC, sans-serif",
@@ -1597,6 +1659,7 @@ class OverlayWindow(QWidget):
             ordered_white[-1].right() - ordered_white[0].left(),
             ordered_white[0].height(),
         )
+        self._draw_keyboard_frame(p, white_bed)
         resting_white = QLinearGradient(white_bed.topLeft(), white_bed.bottomLeft())
         resting_white.setColorAt(0, QColor(230, 237, 246, 255))
         resting_white.setColorAt(1, QColor(154, 170, 190, 250))
@@ -1660,11 +1723,13 @@ class OverlayWindow(QWidget):
                 p.save()
                 p.setOpacity(self._active_key_opacity())
                 p.drawRoundedRect(rect, 2, 2)
+                self._draw_black_key_finish(p, rect, glow)
                 p.restore()
             else:
                 p.save()
                 p.setOpacity(self._opacity)
                 p.drawRoundedRect(rect, 2, 2)
+                self._draw_black_key_finish(p, rect, glow)
                 p.restore()
         # Draw center glows only after both key layers exist. Previously black
         # keys covered part of every neighboring white-key glow.
@@ -1778,14 +1843,7 @@ class OverlayWindow(QWidget):
             return
         p.save()
         p.setOpacity(max(0.0, min(1.0, self._opacity)))
-        panel = QPainterPath()
-        panel.addRoundedRect(rect, 15.0, 15.0)
-        fill = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        fill.setColorAt(0, QColor(12, 20, 32, 178))
-        fill.setColorAt(1, QColor(5, 10, 18, 155))
-        p.fillPath(panel, fill)
-        p.setPen(QPen(QColor(220, 238, 250, 26), 1.0))
-        p.drawPath(panel)
+        self._draw_frosted_panel(p, rect, 15.0)
 
         content = rect.adjusted(56, 9, -14, -9)
         gap = 8.0
@@ -1793,9 +1851,10 @@ class OverlayWindow(QWidget):
         treble = QRectF(content.left(), content.top(), content.width(), staff_height)
         bass = QRectF(content.left(), treble.bottom() + gap, content.width(), staff_height)
         line_gap = min(7.2, max(5.2, staff_height / 7.0))
-        line_color = QColor(206, 226, 241, 96)
-        clef_color = QColor(206, 226, 241, 135)
-        p.setPen(QPen(line_color, 0.9))
+        palette = self._glass_palette()
+        line_color = palette["line"]
+        clef_color = palette["clef"]
+        p.setPen(QPen(line_color, 1.05))
         for staff in (treble, bass):
             center_y = staff.center().y()
             top_line = center_y - 2 * line_gap
@@ -2240,6 +2299,46 @@ class OverlayWindow(QWidget):
                 continue
             p.drawLine(QLineF(boundary, left.top() + 1, boundary, left.bottom() - 1))
         p.restore()
+
+    def _draw_keyboard_frame(self, p: QPainter, white_bed: QRectF) -> None:
+        """Draw a rounded frosted base aligned with the staff panel."""
+        p.save()
+        p.setOpacity(self._opacity)
+        panel = QRectF(
+            16.0,
+            white_bed.top() - 9.0,
+            self.width() - 32.0,
+            white_bed.height() + 18.0,
+        )
+        self._draw_frosted_panel(p, panel, 17.0)
+        p.restore()
+
+    def _draw_black_key_finish(self, p: QPainter, rect: QRectF, glow: float) -> None:
+        """Subtle inner highlight/edge for black keys."""
+        edge_alpha = round(40 + 58 * min(1.0, glow))
+        top_alpha = round(70 + 45 * min(1.0, glow))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(235, 247, 255, edge_alpha), 0.65))
+        p.drawRoundedRect(rect.adjusted(0.55, 0.55, -0.55, -0.55), 1.7, 1.7)
+        p.setPen(QPen(QColor(255, 255, 255, top_alpha), 0.75))
+        p.drawLine(
+            QLineF(
+                rect.left() + 1.5,
+                rect.top() + 1.35,
+                rect.right() - 1.5,
+                rect.top() + 1.35,
+            )
+        )
+        p.setPen(QPen(QColor(0, 0, 0, 48), 0.75))
+        p.drawLine(
+            QLineF(
+                rect.left() + 1.5,
+                rect.bottom() - 1.0,
+                rect.right() - 1.5,
+                rect.bottom() - 1.0,
+            )
+        )
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
     def _draw_active_auras(
         self,
@@ -2790,6 +2889,8 @@ class OverlayWindow(QWidget):
             self._toggle_performance_mode(not self._performance_mode)
         elif name == "staff":
             self._toggle_staff_shadow(not self._staff_enabled)
+        elif name == "glass_theme":
+            self._toggle_glass_theme()
         elif name == "visual_mode":
             self._set_visual_mode(
                 "piano" if self._visual_mode == "erhu" else "erhu"
@@ -3123,6 +3224,12 @@ class OverlayWindow(QWidget):
         self.set_status(f"五线谱轨迹 · {state}", False)
         self.update()
 
+    def _toggle_glass_theme(self) -> None:
+        self._glass_theme = "light" if self._glass_theme == "dark" else "dark"
+        label = "白毛玻璃" if self._glass_theme == "light" else "黑毛玻璃"
+        self.set_status(f"底盘样式 · {label}", False)
+        self.update()
+
     def _set_erhu_orientation(self, vertical: bool) -> None:
         if vertical == self._erhu_vertical:
             return
@@ -3280,7 +3387,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.4"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.0"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3476,7 +3583,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.4"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.0"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3681,6 +3788,8 @@ class OverlayWindow(QWidget):
         # Visual mode intentionally starts from Piano on every launch. A
         # previous Erhu session must not silently load the melody model.
         self._visual_mode = "piano"
+        saved_theme = str(settings.value("glass_theme", "dark"))
+        self._glass_theme = "light" if saved_theme == "light" else "dark"
         self._scale_percent = max(
             60, min(160, int(settings.value("scale_percent", 100)))
         )
@@ -3754,6 +3863,7 @@ class OverlayWindow(QWidget):
         settings.setValue("position_locked", self._position_locked)
         settings.setValue("keyboard_only", self._keyboard_only)
         settings.setValue("erhu_key_mode", self._erhu_key_mode.value)
+        settings.setValue("glass_theme", self._glass_theme)
         settings.sync()
 
     def reset_settings(self) -> None:
@@ -3771,6 +3881,7 @@ class OverlayWindow(QWidget):
         self._active_opacity = 0.85
         self._visual_mode = "piano"
         self._staff_enabled = False
+        self._glass_theme = "dark"
         self.staff_notes.clear()
         self._erhu_vertical = False
         self._erhu_history = True
