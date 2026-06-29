@@ -11,6 +11,7 @@ from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QApplication
 
 from config import AppConfig
+from performance import INSTRUMENTS
 from ui_overlay import OverlayWindow
 
 
@@ -226,6 +227,48 @@ class WindowsOverlayTests(unittest.TestCase):
         window._performance.synth.note_on = lambda midi, velocity: played.append(midi)
         window.keyPressEvent(event)
         self.assertEqual(played, [59])  # Q is C4; Ctrl lowers it to B3.
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_erhu_space_vibrato_and_alt_glide_controls(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._instrument_index = len(INSTRUMENTS) - 1
+        window._toggle_performance_mode(True)
+        bends = []
+        window._performance.synth.pitch_bend = bends.append
+
+        space = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Space,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        window.keyPressEvent(space)
+        window._vibrato_tick()
+        self.assertTrue(window._vibrato_timer.isActive())
+        self.assertNotEqual(bends[-1], 8192)
+        window.keyReleaseEvent(
+            QKeyEvent(
+                QEvent.Type.KeyRelease,
+                Qt.Key.Key_Space,
+                Qt.KeyboardModifier.NoModifier,
+            )
+        )
+        self.assertFalse(window._vibrato_timer.isActive())
+        self.assertEqual(bends[-1], 8192)
+
+        window._performance.press("Q")
+        glide = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_W,
+            Qt.KeyboardModifier.AltModifier,
+            "w",
+        )
+        window.keyPressEvent(glide)
+        self.assertEqual(window._performance.current_midi, 62)
+        window._glide_step(
+            window._glide_generation, 60, 62, 2, 14, 14
+        )
+        self.assertEqual(bends[-1], 8192)
         window._toggle_performance_mode(False)
         window.close()
 

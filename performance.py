@@ -54,6 +54,7 @@ INSTRUMENTS = (
     (73, "长笛"),
     (80, "方波合成器"),
     (88, "幻想音色"),
+    (110, "二胡（近似）"),
 )
 
 
@@ -219,6 +220,17 @@ class WinMmPianoSynth:
     def set_program(self, program: int) -> None:
         self._send(0xC0, program)
 
+    def set_pitch_bend_range(self, semitones: int) -> None:
+        # Registered Parameter 0 selects pitch-bend sensitivity.
+        self._send(0xB0, 101, 0)
+        self._send(0xB0, 100, 0)
+        self._send(0xB0, 6, max(0, min(24, semitones)))
+        self._send(0xB0, 38, 0)
+
+    def pitch_bend(self, value: int) -> None:
+        value = max(0, min(16383, value))
+        self._send(0xE0, value & 0x7F, (value >> 7) & 0x7F)
+
     def sustain(self, enabled: bool) -> None:
         self._send(0xB0, 64, 127 if enabled else 0)
 
@@ -268,6 +280,14 @@ class SoundFontSynth:
             self._synth.program_select(
                 0, self._soundfont_id, 0, max(0, min(127, program))
             )
+
+    def set_pitch_bend_range(self, semitones: int) -> None:
+        if self.available:
+            self._synth.pitchbend_range(0, semitones)
+
+    def pitch_bend(self, value: int) -> None:
+        if self.available:
+            self._synth.pitchbend(0, max(0, min(16383, value)))
 
     def sustain(self, enabled: bool) -> None:
         if self.available:
@@ -357,6 +377,9 @@ class PerformanceController:
         self.sound_source = "windows"
         self.synth = WinMmPianoSynth()
         self.synth.set_program(self.instrument_program)
+        self.synth.set_pitch_bend_range(
+            12 if self.expressive_strings else 2
+        )
         if sound_source == "soundfont" and soundfont_path is not None:
             self.use_soundfont(soundfont_path)
         self.mode = "major"
@@ -366,6 +389,8 @@ class PerformanceController:
         self.resting = False
         self.input_mode = "keyboard"
         self.pressed: dict[str, int] = {}
+        self.current_key: str | None = None
+        self.current_midi: int | None = None
         self.ear_training = EarTrainingSession()
         self.midi = MidiInput(
             self._midi_note_on,
@@ -393,12 +418,20 @@ class PerformanceController:
         source = "SF2" if self.sound_source == "soundfont" else "WIN"
         return f"{source} · {self.instrument_name}"
 
+    @property
+    def expressive_strings(self) -> bool:
+        return self.instrument_program == 110
+
     def shift_instrument(self, amount: int) -> str:
         self.all_notes_off()
         self.instrument_index = (
             self.instrument_index + amount
         ) % len(INSTRUMENTS)
         self.synth.set_program(self.instrument_program)
+        self.synth.set_pitch_bend_range(
+            12 if self.expressive_strings else 2
+        )
+        self.synth.pitch_bend(8192)
         return self.instrument_name
 
     def use_windows(self) -> bool:
@@ -411,6 +444,9 @@ class PerformanceController:
             replacement.close()
             return False
         replacement.set_program(self.instrument_program)
+        replacement.set_pitch_bend_range(
+            12 if self.expressive_strings else 2
+        )
         old = self.synth
         self.synth = replacement
         self.sound_source = "windows"
@@ -425,6 +461,9 @@ class PerformanceController:
         old = self.synth
         self.synth = replacement
         self.sound_source = "soundfont"
+        self.synth.set_pitch_bend_range(
+            12 if self.expressive_strings else 2
+        )
         old.close()
         return True
 
@@ -467,7 +506,11 @@ class PerformanceController:
         midi = self.midi_for_key(key, accidental)
         if midi is None:
             return None
+        if self.expressive_strings:
+            self.all_notes_off()
         self.pressed[key] = midi
+        self.current_key = key
+        self.current_midi = midi
         self.synth.note_on(midi, velocity)
         self.visual_note(midi, velocity)
         self.played_note(midi)
@@ -477,6 +520,47 @@ class PerformanceController:
         midi = self.pressed.pop(key, None)
         if midi is not None:
             self.synth.note_off(midi)
+            if midi == self.current_midi:
+                self.current_key = None
+                self.current_midi = None
+
+    def begin_glide(
+        self, key: str, accidental: int = 0
+    ) -> tuple[int, int] | None:
+        if (
+            not self.expressive_strings
+            or self.input_mode != "keyboard"
+            or self.resting
+            or self.current_midi is None
+        ):
+            return None
+        target = self.midi_for_key(key, accidental)
+        source = self.current_midi
+        if (
+            target is None
+            or target == source
+            or abs(target - source) > 12
+        ):
+            return None
+        if self.current_key is not None:
+            self.pressed.pop(self.current_key, None)
+        self.pressed[key] = target
+        self.current_key = key
+        self.current_midi = target
+        self.synth.set_pitch_bend_range(12)
+        return source, target
+
+    def set_pitch_bend(self, value: int) -> None:
+        self.synth.pitch_bend(value)
+
+    def finish_glide(
+        self, source: int, target: int, velocity: int = 96
+    ) -> None:
+        self.synth.note_off(source)
+        self.synth.pitch_bend(8192)
+        self.synth.note_on(target, velocity)
+        self.visual_note(target, velocity)
+        self.played_note(target)
 
     def set_sustain(self, enabled: bool) -> None:
         self.sustain_enabled = enabled
@@ -489,8 +573,11 @@ class PerformanceController:
 
     def all_notes_off(self) -> None:
         self.pressed.clear()
+        self.current_key = None
+        self.current_midi = None
         self.sustain_enabled = False
         self.synth.all_notes_off()
+        self.synth.pitch_bend(8192)
 
     def shift_octave(self, amount: int) -> None:
         self.all_notes_off()

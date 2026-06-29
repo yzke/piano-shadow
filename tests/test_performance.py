@@ -30,6 +30,12 @@ class FakeSynth:
     def set_program(self, program):
         self.events.append(("program", program))
 
+    def set_pitch_bend_range(self, semitones):
+        self.events.append(("bend_range", semitones))
+
+    def pitch_bend(self, value):
+        self.events.append(("bend", value))
+
     def sustain(self, enabled):
         self.events.append(("sustain", enabled))
 
@@ -213,6 +219,25 @@ class PerformanceTests(unittest.TestCase):
             self.assertIn(("program", 16), controller.synth.events)
             self.assertTrue(controller.use_windows())
             self.assertEqual(controller.sound_source, "windows")
+
+    def test_erhu_mode_is_monophonic_and_prepares_alt_glide(self):
+        with (
+            patch("performance.WinMmPianoSynth", FakeSynth),
+            patch("performance.MidiInput", FakeMidi),
+        ):
+            controller = PerformanceController(
+                lambda _midi, _velocity: None,
+                instrument_index=len(INSTRUMENTS) - 1,
+            )
+        self.assertTrue(controller.expressive_strings)
+        self.assertEqual(controller.press("Q"), 60)
+        self.assertEqual(controller.begin_glide("W"), (60, 62))
+        controller.set_pitch_bend(8700)
+        controller.finish_glide(60, 62)
+        self.assertIn(("bend_range", 12), controller.synth.events)
+        self.assertIn(("bend", 8700), controller.synth.events)
+        self.assertIn(("off", 60), controller.synth.events)
+        self.assertIn(("on", 62, 96), controller.synth.events)
 
     def test_ear_training_cycles_all_levels_and_closes(self):
         session = EarTrainingSession(random.Random(4))

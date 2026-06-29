@@ -142,6 +142,8 @@ class OverlayWindow(QWidget):
         self._ear_feedback_target: tuple[int, ...] = ()
         self._ear_feedback_error: tuple[int, int, int] | None = None
         self._ear_feedback_correct = False
+        self._vibrato_phase = 0.0
+        self._glide_generation = 0
         self._click_through = False
         self._model_download_prompt_shown = False
         self._gpu_requirements_confirmed = False
@@ -181,6 +183,10 @@ class OverlayWindow(QWidget):
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
+        self._vibrato_timer = QTimer(self)
+        self._vibrato_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._vibrato_timer.setInterval(35)
+        self._vibrato_timer.timeout.connect(self._vibrato_tick)
 
     def _setup_window(self) -> None:
         self.setWindowTitle("Piano Shadow")
@@ -466,9 +472,15 @@ class OverlayWindow(QWidget):
             p.drawText(
                 help_rect.adjusted(10, 4, -10, -4),
                 Qt.AlignmentFlag.AlignCenter,
-                "每排前 7 键为一组音阶，右侧按键顺延至高八度\n"
-                "← 上一个调  → 下一个调  ↑↓ 八度\n"
-                "Shift 升音  Ctrl 降音  Space 延音  Enter 休止",
+                (
+                    "二胡近似：Space 揉弦 · Alt+目标音 滑音 · Enter 休止\n"
+                    "每排前 7 键为音阶，右侧顺延高八度 · ←→ 五度圈"
+                    if controller.expressive_strings
+                    else
+                    "每排前 7 键为一组音阶，右侧按键顺延至高八度\n"
+                    "← 上一个调  → 下一个调  ↑↓ 八度\n"
+                    "Shift 升音  Ctrl 降音  Space 延音  Enter 休止"
+                ),
             )
         p.restore()
 
@@ -1116,7 +1128,10 @@ class OverlayWindow(QWidget):
             return
         key = event.key()
         if key == Qt.Key.Key_Space:
-            controller.set_sustain(True)
+            if controller.expressive_strings:
+                self._start_vibrato()
+            else:
+                controller.set_sustain(True)
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             controller.set_rest(True)
         elif key == Qt.Key.Key_Down:
@@ -1138,7 +1153,16 @@ class OverlayWindow(QWidget):
                 shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
                 control = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
                 accidental = 0 if shift and control else 1 if shift else -1 if control else 0
-                controller.press(token, accidental)
+                alt = bool(modifiers & Qt.KeyboardModifier.AltModifier)
+                glide = (
+                    controller.begin_glide(token, accidental)
+                    if alt and controller.expressive_strings
+                    else None
+                )
+                if glide is not None:
+                    self._start_glide(*glide)
+                else:
+                    controller.press(token, accidental)
         self.update()
         event.accept()
 
@@ -1153,7 +1177,10 @@ class OverlayWindow(QWidget):
             event.accept()
             return
         if event.key() == Qt.Key.Key_Space:
-            self._performance.set_sustain(False)
+            if self._performance.expressive_strings:
+                self._stop_vibrato()
+            else:
+                self._performance.set_sustain(False)
         elif event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._performance.set_rest(False)
         else:
@@ -1162,6 +1189,59 @@ class OverlayWindow(QWidget):
                 self._performance.release(token)
         self.update()
         event.accept()
+
+    def _start_vibrato(self) -> None:
+        if self._performance is None or not self._performance.expressive_strings:
+            return
+        self._vibrato_phase = 0.0
+        self._vibrato_timer.start()
+
+    def _vibrato_tick(self) -> None:
+        if self._performance is None or not self._performance.expressive_strings:
+            self._stop_vibrato()
+            return
+        self._vibrato_phase += 1.1
+        bend = 8192 + round(math.sin(self._vibrato_phase) * 180)
+        self._performance.set_pitch_bend(bend)
+
+    def _stop_vibrato(self) -> None:
+        self._vibrato_timer.stop()
+        if self._performance is not None:
+            self._performance.set_pitch_bend(8192)
+
+    def _start_glide(self, source: int, target: int) -> None:
+        if self._performance is None:
+            return
+        self._stop_vibrato()
+        self._glide_generation += 1
+        generation = self._glide_generation
+        steps = 14
+        interval = target - source
+        for step in range(1, steps + 1):
+            QTimer.singleShot(
+                round(step * 420 / steps),
+                lambda current=step, token=generation: self._glide_step(
+                    token, source, target, interval, current, steps
+                ),
+            )
+
+    def _glide_step(
+        self,
+        generation: int,
+        source: int,
+        target: int,
+        interval: int,
+        step: int,
+        steps: int,
+    ) -> None:
+        if generation != self._glide_generation or self._performance is None:
+            return
+        if step < steps:
+            bend = 8192 + round((interval / 12) * 8191 * step / steps)
+            self._performance.set_pitch_bend(bend)
+        else:
+            self._performance.finish_glide(source, target)
+        self.update()
 
     @pyqtSlot(int, int)
     def _show_performance_note(self, midi: int, velocity: int) -> None:
@@ -1317,6 +1397,8 @@ class OverlayWindow(QWidget):
             return
         self._performance_mode = enabled
         self._performance_help = False
+        self._glide_generation += 1
+        self._stop_vibrato()
         self._ear_playback_generation += 1
         self._clear_ear_feedback()
         self.visual_notes.clear()
@@ -1452,6 +1534,8 @@ class OverlayWindow(QWidget):
     def _shift_instrument(self, amount: int) -> None:
         if self._performance is None:
             return
+        self._glide_generation += 1
+        self._stop_vibrato()
         self._performance.shift_instrument(amount)
         self._instrument_index = self._performance.instrument_index
         self.set_status(
@@ -1494,6 +1578,8 @@ class OverlayWindow(QWidget):
     def _reset_performance_sound(self) -> None:
         if self._performance is None:
             return
+        self._glide_generation += 1
+        self._stop_vibrato()
         self._performance.instrument_index = 0
         if not self._performance.use_windows():
             self.set_status("Windows MIDI 音源不可用", True)
