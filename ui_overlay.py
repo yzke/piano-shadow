@@ -152,6 +152,7 @@ class OverlayWindow(QWidget):
         self._erhu_display_position = 0.0
         self._erhu_target_position = 0.0
         self._erhu_trails: list[ErhuTrail] = []
+        self._erhu_input_ready = False
         self._erhu_vertical = False
         self._erhu_history = True
         self._erhu_body = True
@@ -261,7 +262,11 @@ class OverlayWindow(QWidget):
                 )
 
     def add_pitch(self, event: PitchEvent) -> None:
-        if self._visual_mode != "erhu" or self._performance_mode:
+        if (
+            self._visual_mode != "erhu"
+            or self._performance_mode
+            or not self._erhu_input_ready
+        ):
             return
         state = self._erhu_mapper.map(event.midi_float, event.confidence)
         if state is None:
@@ -307,7 +312,7 @@ class OverlayWindow(QWidget):
         self.update()
 
     def _display_erhu_note(self, events: list[NoteEvent]) -> None:
-        if not events:
+        if not events or not self._erhu_input_ready:
             return
         # Erhu Shadow deliberately follows one melody note, not a chord.
         event = max(events, key=lambda item: (item.confidence, item.velocity))
@@ -324,6 +329,8 @@ class OverlayWindow(QWidget):
         self.update()
 
     def set_status(self, text: str, error: bool = False) -> None:
+        if self._visual_mode == "erhu" and text == "Listening · Pitch Tracker":
+            self._erhu_input_ready = True
         self.status_text = text
         self.status_error = error
         self.update()
@@ -2586,6 +2593,7 @@ class OverlayWindow(QWidget):
         self._erhu_display_position = 0.0
         self._erhu_target_position = 0.0
         self._erhu_mapper.reset()
+        self._erhu_input_ready = mode == "erhu" and self.config.demo_mode
         label = "钢琴模式" if mode == "piano" else "二胡模式 · Erhu Shadow"
         target_model = "piano-gpu" if mode == "piano" else "pitch-tracker"
         model_label = "Piano GPU" if mode == "piano" else "实时音高追踪"
@@ -2763,7 +2771,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.0"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -2959,7 +2967,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.6.0"}
+                    url, headers={"User-Agent": "PianoShadow/0.6.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))

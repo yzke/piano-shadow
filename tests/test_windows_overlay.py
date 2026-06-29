@@ -432,6 +432,19 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertAlmostEqual(window._erhu_target_position, 0.5)
         window.close()
 
+    def test_erhu_loading_ignores_notes_until_pitch_tracker_ready(self):
+        window = OverlayWindow(AppConfig())
+        window._set_visual_mode("erhu")
+        window._display_notes([NoteEvent(69, 0, 0.5, 100, 0.9)])
+        window.add_pitch(PitchEvent(440.0, 69.0, 0.9, 0.0))
+        self.assertIsNone(window._erhu_state)
+
+        window.set_status("Listening · Pitch Tracker", False)
+        window.add_pitch(PitchEvent(440.0, 69.0, 0.9, 0.1))
+        self.assertIsNotNone(window._erhu_state)
+        self.assertEqual(window._erhu_state.string_name, "outer")
+        window.close()
+
     def test_erhu_string_color_offset_preserves_hue_and_changes_lightness(self):
         inner = OverlayWindow._erhu_note_color(69, "inner")
         outer = OverlayWindow._erhu_note_color(69, "outer")
