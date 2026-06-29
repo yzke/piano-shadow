@@ -120,6 +120,13 @@ class VisualNote:
 
 
 @dataclass(slots=True)
+class StaffNote:
+    midi: int
+    born: float
+    strength: float
+
+
+@dataclass(slots=True)
 class ErhuTrail:
     state: ErhuState
     born: float
@@ -146,6 +153,8 @@ class OverlayWindow(QWidget):
         super().__init__()
         self.config = config
         self.visual_notes: list[VisualNote] = []
+        self.staff_notes: list[StaffNote] = []
+        self._staff_enabled = False
         self._visual_mode = "piano"
         self._erhu_mapper = ErhuMapper()
         self._erhu_state: ErhuState | None = None
@@ -235,6 +244,42 @@ class OverlayWindow(QWidget):
         screen = QApplication.primaryScreen().availableGeometry()
         self.move(screen.center().x() - self.width() // 2, screen.bottom() - self.height() - 56)
 
+    def _scaled_base_size(self) -> tuple[int, int]:
+        base_width, base_height = (
+            (self.config.height, self.config.width)
+            if self._erhu_vertical
+            else (self.config.width, self.config.height)
+        )
+        return (
+            round(base_width * self._scale_percent / 100),
+            round(base_height * self._scale_percent / 100),
+        )
+
+    def _staff_extra_height(self) -> int:
+        if (
+            not self._staff_enabled
+            or self._visual_mode != "piano"
+            or self._erhu_vertical
+        ):
+            return 0
+        return round(118 * self._scale_percent / 100)
+
+    def _target_window_size(self) -> QSize:
+        width, height = self._scaled_base_size()
+        return QSize(width, height + self._staff_extra_height())
+
+    def _keyboard_area_height(self) -> int:
+        _width, height = self._scaled_base_size()
+        if self._staff_enabled and self._visual_mode == "piano":
+            return height
+        return self.height()
+
+    def _apply_target_window_size(self) -> None:
+        center = self.frameGeometry().center()
+        target = self._target_window_size()
+        self.setFixedSize(target)
+        self.move(center.x() - target.width() // 2, center.y() - target.height() // 2)
+
     def add_notes(self, events: list[NoteEvent]) -> None:
         """Replay a transcribed chunk in onset order, preserving chords."""
         if not events or self._performance_mode:
@@ -308,8 +353,30 @@ class OverlayWindow(QWidget):
                     lane,
                 )
             )
+            self._add_staff_note(
+                event.midi,
+                now,
+                max(0.35, event.velocity / 127),
+            )
         self.visual_notes = self.visual_notes[-40:]
         self.update()
+
+    def _add_staff_note(
+        self,
+        midi: int,
+        born: float,
+        strength: float = 0.75,
+    ) -> None:
+        if not self._staff_enabled or self._visual_mode != "piano":
+            return
+        self.staff_notes.append(
+            StaffNote(
+                midi=midi,
+                born=born,
+                strength=max(0.15, min(1.0, strength)),
+            )
+        )
+        self.staff_notes = self.staff_notes[-160:]
 
     def _display_erhu_note(self, events: list[NoteEvent]) -> None:
         if not events or not self._erhu_input_ready:
@@ -340,6 +407,9 @@ class OverlayWindow(QWidget):
         self.visual_notes = [
             n for n in self.visual_notes if now - n.born < self.config.decay_seconds * 1.35
         ]
+        self.staff_notes = [
+            note for note in self.staff_notes if now - note.born < 8.2
+        ]
         erhu_trail_seconds = max(5.5, self.config.decay_seconds * 3.8)
         self._erhu_trails = [
             trail for trail in self._erhu_trails if now - trail.born < erhu_trail_seconds
@@ -351,7 +421,12 @@ class OverlayWindow(QWidget):
             self._erhu_display_position += distance * 0.22
         else:
             self._erhu_display_position = self._erhu_target_position
-        if self.visual_notes or self._erhu_trails or abs(distance) > 0.01:
+        if (
+            self.visual_notes
+            or self.staff_notes
+            or self._erhu_trails
+            or abs(distance) > 0.01
+        ):
             self.update()
 
     def _alpha(self, note: VisualNote, now: float) -> float:
@@ -407,8 +482,9 @@ class OverlayWindow(QWidget):
 
     def _keyboard_geometry(self) -> tuple[dict[int, QRectF], dict[int, QRectF]]:
         margin = 20.0
-        top = self.height() * 0.58
-        height = self.height() - top - 13
+        keyboard_area_height = self._keyboard_area_height()
+        top = keyboard_area_height * 0.58
+        height = keyboard_area_height - top - 13
         white_notes = [m for m in range(PIANO_LOW, PIANO_HIGH + 1) if not is_black_key(m)]
         white_width = (self.width() - margin * 2) / len(white_notes)
         white: dict[int, QRectF] = {}
@@ -446,6 +522,7 @@ class OverlayWindow(QWidget):
             white, black = self._keyboard_geometry()
             self._draw_note_labels(painter, now, white, black)
             self._draw_keyboard(painter, white, black, now)
+            self._draw_staff_shadow(painter, now, white)
 
     def _draw_glass(self, p: QPainter) -> None:
         p.save()
@@ -493,7 +570,10 @@ class OverlayWindow(QWidget):
 
         p.save()
         p.setOpacity(self._active_opacity)
-        font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.050)))
+        font = QFont(
+            "Inter, Arial, sans-serif",
+            max(7, round(self._keyboard_area_height() * 0.050)),
+        )
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
         for index, (name, pitch_class) in enumerate(zip(names, pitch_classes)):
@@ -860,6 +940,7 @@ class OverlayWindow(QWidget):
         else:
             secondary = (
                 ("performance", size),
+                ("staff", size),
                 ("piano_model", size),
             )
         if self._performance_mode:
@@ -1049,6 +1130,7 @@ class OverlayWindow(QWidget):
                 (name == "lock" and self._position_locked)
                 or (name == "top" and self._always_on_top)
                 or (name == "piano_model" and self.config.model == "piano-gpu")
+                or (name == "staff" and self._staff_enabled)
                 or (name == "erhu_rotate" and self._erhu_vertical)
                 or (name == "erhu_history" and self._erhu_history)
                 or (name == "erhu_body" and self._erhu_body)
@@ -1121,6 +1203,15 @@ class OverlayWindow(QWidget):
             p.drawLine(
                 QLineF(cx - 2.45 * unit, cy + 2.35 * unit, cx + 2.45 * unit, cy + 2.35 * unit)
             )
+        elif name == "staff":
+            left = cx - 2.5 * unit
+            right = cx + 2.5 * unit
+            for offset in (-1.6, -0.8, 0, 0.8, 1.6):
+                p.drawLine(QLineF(left, cy + offset * unit, right, cy + offset * unit))
+            p.setBrush(QColor(205, 233, 249, 180))
+            p.drawEllipse(QRectF(cx - 0.55 * unit, cy - 0.95 * unit, 1.1 * unit, 0.8 * unit))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawLine(QLineF(cx + 0.55 * unit, cy - 0.55 * unit, cx + 0.55 * unit, cy - 2.25 * unit))
         elif name == "visual_mode":
             font = QFont(
                 "Inter, Noto Sans CJK SC, sans-serif",
@@ -1372,11 +1463,12 @@ class OverlayWindow(QWidget):
         )
         if not visible:
             return
-        font = QFont("Inter, Arial, sans-serif", max(9, round(self.height() * 0.068)))
+        keyboard_height = self._keyboard_area_height()
+        font = QFont("Inter, Arial, sans-serif", max(9, round(keyboard_height * 0.068)))
         font.setWeight(QFont.Weight.DemiBold)
         p.setFont(font)
         metrics = QFontMetricsF(font)
-        solfege_font = QFont("Inter, Arial, sans-serif", max(7, round(self.height() * 0.047)))
+        solfege_font = QFont("Inter, Arial, sans-serif", max(7, round(keyboard_height * 0.047)))
         solfege_metrics = QFontMetricsF(solfege_font)
         lane_right_edges = [-1e9] * 3
         keyboard_top = next(iter(white.values())).top()
@@ -1410,7 +1502,7 @@ class OverlayWindow(QWidget):
                 left = lane_right_edges[available_lane] + 3
             lane = available_lane
             lane_right_edges[lane] = left + width
-            baseline = self.height() * (0.27 + lane * 0.115)
+            baseline = keyboard_height * (0.27 + lane * 0.115)
             y = baseline - min(5, age * 3)
             solfege_y = y + solfege_metrics.height() * 0.92
 
@@ -1590,6 +1682,175 @@ class OverlayWindow(QWidget):
                         rect.bottom() - 2.0,
                     )
                 )
+        p.restore()
+
+    def _staff_rect(self, white: dict[int, QRectF]) -> QRectF | None:
+        if not self._staff_enabled or self._visual_mode != "piano" or not white:
+            return None
+        keyboard_bottom = max(rect.bottom() for rect in white.values())
+        top = keyboard_bottom + 10.0
+        bottom = self.height() - 13.0
+        if bottom - top < 72:
+            return None
+        return QRectF(16.0, top, self.width() - 32.0, bottom - top)
+
+    @staticmethod
+    def _staff_spelling(midi: int) -> tuple[str, int, bool]:
+        pc = midi % 12
+        octave = midi // 12 - 1
+        spellings = {
+            0: ("C", 0, False),
+            1: ("C", 0, True),
+            2: ("D", 1, False),
+            3: ("D", 1, True),
+            4: ("E", 2, False),
+            5: ("F", 3, False),
+            6: ("F", 3, True),
+            7: ("G", 4, False),
+            8: ("G", 4, True),
+            9: ("A", 5, False),
+            10: ("A", 5, True),
+            11: ("B", 6, False),
+        }
+        _name, letter_index, sharp = spellings[pc]
+        return _name, octave * 7 + letter_index, sharp
+
+    def _draw_staff_shadow(
+        self,
+        p: QPainter,
+        now: float,
+        white: dict[int, QRectF],
+    ) -> None:
+        rect = self._staff_rect(white)
+        if rect is None:
+            return
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, self._opacity)))
+        panel = QPainterPath()
+        panel.addRoundedRect(rect, 15.0, 15.0)
+        fill = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        fill.setColorAt(0, QColor(12, 20, 32, 178))
+        fill.setColorAt(1, QColor(5, 10, 18, 155))
+        p.fillPath(panel, fill)
+        p.setPen(QPen(QColor(220, 238, 250, 26), 1.0))
+        p.drawPath(panel)
+
+        content = rect.adjusted(56, 9, -14, -9)
+        gap = 8.0
+        staff_height = (content.height() - gap) / 2
+        treble = QRectF(content.left(), content.top(), content.width(), staff_height)
+        bass = QRectF(content.left(), treble.bottom() + gap, content.width(), staff_height)
+        line_gap = min(7.2, max(5.2, staff_height / 7.0))
+        line_color = QColor(206, 226, 241, 96)
+        clef_color = QColor(206, 226, 241, 135)
+        p.setPen(QPen(line_color, 0.9))
+        for staff in (treble, bass):
+            center_y = staff.center().y()
+            top_line = center_y - 2 * line_gap
+            for index in range(5):
+                y = top_line + index * line_gap
+                p.drawLine(QLineF(staff.left(), y, staff.right(), y))
+        clef_font = QFont("Cambria Math, Segoe UI Symbol, serif", max(18, round(line_gap * 4.2)))
+        p.setFont(clef_font)
+        p.setPen(clef_color)
+        p.drawText(QRectF(rect.left() + 16, treble.top() - 5, 36, treble.height() + 10), Qt.AlignmentFlag.AlignCenter, "𝄞")
+        p.drawText(QRectF(rect.left() + 16, bass.top() - 5, 36, bass.height() + 10), Qt.AlignmentFlag.AlignCenter, "𝄢")
+        p.restore()
+
+        visible_seconds = 7.2
+        usable = content.width()
+        treble_ref = 4 * 7 + 2  # E4, treble bottom line.
+        bass_ref = 2 * 7 + 4    # G2, bass bottom line.
+
+        def y_for(midi: int) -> tuple[QRectF, float, int, bool]:
+            _name, diatonic, sharp = self._staff_spelling(midi)
+            staff = treble if midi >= 60 else bass
+            ref = treble_ref if midi >= 60 else bass_ref
+            center_y = staff.center().y()
+            bottom_line = center_y + 2 * line_gap
+            return staff, bottom_line - (diatonic - ref) * line_gap / 2, diatonic - ref, sharp
+
+        p.save()
+        p.setOpacity(self._active_opacity)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
+        for note in self.staff_notes:
+            age = now - note.born
+            if age < 0 or age > visible_seconds:
+                continue
+            staff, y, offset, sharp = y_for(note.midi)
+            x = content.right() - age / visible_seconds * usable
+            if x < content.left() - 28 or x > content.right() + 12:
+                continue
+            color = self._note_color(note.midi, round(230 * note.strength))
+            # Staff Shadow is a visual trace, not rhythm transcription. Keep a
+            # fixed compact tail so notes simply enter from the right and leave
+            # from the left without implying exact note values.
+            tail = 48.0
+            tail_right = min(content.right(), x + tail)
+            red, green, blue = PITCH_COLORS[note.midi % 12]
+            tail_gradient = QLinearGradient(QPointF(tail_right, y), QPointF(x, y))
+            tail_gradient.setColorAt(
+                0.0,
+                QColor(red, green, blue, round(8 * note.strength)),
+            )
+            tail_gradient.setColorAt(
+                0.62,
+                QColor(red, green, blue, round(72 * note.strength)),
+            )
+            tail_gradient.setColorAt(
+                1.0,
+                QColor(red, green, blue, round(185 * note.strength)),
+            )
+            tail_path = QPainterPath()
+            tail_path.moveTo(x - 0.5, y - 4.0)
+            tail_path.cubicTo(
+                x + tail * 0.24,
+                y - 4.2,
+                tail_right - tail * 0.28,
+                y - 2.2,
+                tail_right,
+                y - 1.0,
+            )
+            tail_path.lineTo(tail_right, y + 1.0)
+            tail_path.cubicTo(
+                tail_right - tail * 0.28,
+                y + 2.2,
+                x + tail * 0.24,
+                y + 4.2,
+                x - 0.5,
+                y + 4.0,
+            )
+            tail_path.closeSubpath()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tail_gradient)
+            p.drawPath(tail_path)
+
+            head_gradient = QRadialGradient(QPointF(x - 1.2, y - 1.2), 8.2)
+            head_gradient.setColorAt(0.0, QColor(255, 255, 255, round(58 * note.strength)))
+            head_gradient.setColorAt(0.24, QColor(red, green, blue, round(238 * note.strength)))
+            head_gradient.setColorAt(1.0, QColor(red, green, blue, round(176 * note.strength)))
+            p.setPen(QPen(QColor(red, green, blue, round(155 * note.strength)), 0.75))
+            p.setBrush(head_gradient)
+            p.drawEllipse(QRectF(x - 5.9, y - 4.45, 11.8, 8.9))
+
+            if sharp:
+                accidental_font = QFont("Inter, Noto Sans CJK SC, sans-serif", max(8, round(line_gap * 1.55)))
+                accidental_font.setWeight(QFont.Weight.DemiBold)
+                p.setFont(accidental_font)
+                p.setPen(self._note_color(note.midi, round(190 * note.strength)))
+                p.drawText(QRectF(x - 19, y - 9, 11, 18), Qt.AlignmentFlag.AlignCenter, "♯")
+
+            if offset < 0 or offset > 8:
+                ledger_pen = QPen(QColor(color.red(), color.green(), color.blue(), round(135 * note.strength)), 0.9)
+                p.setPen(ledger_pen)
+                if offset < 0:
+                    ledgers = range(-2, offset - 1, -2)
+                else:
+                    ledgers = range(10, offset + 1, 2)
+                bottom_line = staff.center().y() + 2 * line_gap
+                for ledger_offset in ledgers:
+                    ledger_y = bottom_line - ledger_offset * line_gap / 2
+                    p.drawLine(QLineF(x - 9, ledger_y, x + 9, ledger_y))
         p.restore()
 
     def _draw_erhu(self, p: QPainter, now: float) -> None:
@@ -2437,6 +2698,8 @@ class OverlayWindow(QWidget):
                 self.update()
                 return
             self._toggle_performance_mode(not self._performance_mode)
+        elif name == "staff":
+            self._toggle_staff_shadow(not self._staff_enabled)
         elif name == "visual_mode":
             self._set_visual_mode(
                 "piano" if self._visual_mode == "erhu" else "erhu"
@@ -2650,6 +2913,15 @@ class OverlayWindow(QWidget):
             )
             visual_group.addAction(action)
             visual_menu.addAction(action)
+        staff_action = QAction(
+            "五线谱轨迹",
+            menu,
+            checkable=True,
+            checked=self._staff_enabled,
+        )
+        staff_action.setEnabled(self._visual_mode == "piano")
+        staff_action.triggered.connect(self._toggle_staff_shadow)
+        menu.addAction(staff_action)
         key_menu = menu.addMenu("二胡调式显示")
         key_group = QActionGroup(key_menu)
         key_group.setExclusive(True)
@@ -2714,6 +2986,10 @@ class OverlayWindow(QWidget):
             return
         if mode == "piano" and self._erhu_vertical:
             self._set_erhu_orientation(False)
+        if mode == "erhu" and self._staff_enabled:
+            self._staff_enabled = False
+            self.staff_notes.clear()
+            self._apply_target_window_size()
         self._visual_mode = mode
         self.visual_notes.clear()
         self._erhu_trails.clear()
@@ -2740,6 +3016,21 @@ class OverlayWindow(QWidget):
             # controller recover if a previous worker stopped unexpectedly.
             self.model_selected.emit(target_model)
         self.visual_mode_changed.emit(mode)
+        self.update()
+
+    def _toggle_staff_shadow(self, enabled: bool) -> None:
+        if enabled and self._visual_mode != "piano":
+            self.set_status("五线谱轨迹仅在钢琴模式中提供", False)
+            self.update()
+            return
+        if enabled == self._staff_enabled:
+            return
+        self._staff_enabled = enabled
+        if not enabled:
+            self.staff_notes.clear()
+        self._apply_target_window_size()
+        state = "开启" if enabled else "关闭"
+        self.set_status(f"五线谱轨迹 · {state}", False)
         self.update()
 
     def _set_erhu_orientation(self, vertical: bool) -> None:
@@ -3285,17 +3576,8 @@ class OverlayWindow(QWidget):
         percent = max(60, min(160, percent))
         if percent == self._scale_percent:
             return
-        center = self.frameGeometry().center()
         self._scale_percent = percent
-        base_width, base_height = (
-            (self.config.height, self.config.width)
-            if self._erhu_vertical
-            else (self.config.width, self.config.height)
-        )
-        width = round(base_width * percent / 100)
-        height = round(base_height * percent / 100)
-        self.setFixedSize(width, height)
-        self.move(center.x() - width // 2, center.y() - height // 2)
+        self._apply_target_window_size()
         self.update()
 
     def restore_settings(self) -> None:
@@ -3398,6 +3680,8 @@ class OverlayWindow(QWidget):
         self._opacity = 0.85
         self._active_opacity = 0.85
         self._visual_mode = "piano"
+        self._staff_enabled = False
+        self.staff_notes.clear()
         self._erhu_vertical = False
         self._erhu_history = True
         self._erhu_body = True
@@ -3560,4 +3844,5 @@ class OverlayWindow(QWidget):
         self._keyboard_only = enabled
         # Entering is always locked; leaving restores normal draggable mode.
         self._toggle_position_lock(enabled)
+        self._apply_target_window_size()
         self.update()

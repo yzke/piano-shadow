@@ -117,6 +117,7 @@ class WindowsOverlayTests(unittest.TestCase):
                 "keyboard_opacity",
                 "active_opacity",
                 "performance",
+                "staff",
                 "piano_model",
                 "input_mode",
                 "performance_help",
@@ -140,6 +141,46 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertEqual(window._performance.input_mode, "midi")
         window._toggle_performance_mode(False)
         window.close()
+
+    def test_staff_shadow_toggle_extends_window_and_records_notes(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        base_height = window.height()
+        self.assertIn("staff", window._control_rects())
+
+        window._activate_control("staff")
+        self.assertTrue(window._staff_enabled)
+        self.assertGreater(window.height(), base_height)
+
+        window._display_notes([NoteEvent(60, 0.0, 0.45, 96, 0.95)])
+        self.assertEqual([note.midi for note in window.staff_notes], [60])
+
+        window._set_visual_mode("erhu")
+        self.assertFalse(window._staff_enabled)
+        self.assertEqual(window.staff_notes, [])
+        self.assertEqual(window.height(), base_height)
+        window.close()
+
+    def test_keyboard_only_keeps_staff_when_staff_shadow_is_enabled(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        base_height = window.height()
+        window._toggle_staff_shadow(True)
+        staff_height = window.height()
+
+        window._toggle_keyboard_only(True)
+        self.assertTrue(window._keyboard_only)
+        self.assertTrue(window._staff_enabled)
+        self.assertGreater(window.height(), base_height)
+        self.assertEqual(window.height(), staff_height)
+
+        white, _black = window._keyboard_geometry()
+        self.assertIsNotNone(window._staff_rect(white))
+        self.assertEqual(tuple(window._control_rects()), ("lock",))
+        window._toggle_keyboard_only(False)
+        window.close()
+
+    def test_staff_spelling_uses_sharp_positions(self):
+        self.assertEqual(OverlayWindow._staff_spelling(60), ("C", 28, False))
+        self.assertEqual(OverlayWindow._staff_spelling(61), ("C", 28, True))
 
     def test_performance_nav_control_changes_scale_and_octave(self):
         window = OverlayWindow(AppConfig(demo_mode=True))
