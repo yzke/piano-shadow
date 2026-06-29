@@ -154,6 +154,8 @@ class WindowsOverlayTests(unittest.TestCase):
         window._activate_control("glass_theme")
         self.assertEqual(window._glass_theme, "light")
         window._activate_control("glass_theme")
+        self.assertEqual(window._glass_theme, "none")
+        window._activate_control("glass_theme")
         self.assertEqual(window._glass_theme, "dark")
         window.close()
 

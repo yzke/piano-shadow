@@ -1231,7 +1231,7 @@ class OverlayWindow(QWidget):
                 or (name == "top" and self._always_on_top)
                 or (name == "piano_model" and self.config.model == "piano-gpu")
                 or (name == "staff" and self._staff_enabled)
-                or (name == "glass_theme" and self._glass_theme == "light")
+                or (name == "glass_theme" and self._glass_theme != "dark")
                 or (name == "erhu_rotate" and self._erhu_vertical)
                 or (name == "erhu_history" and self._erhu_history)
                 or (name == "erhu_body" and self._erhu_body)
@@ -1320,6 +1320,10 @@ class OverlayWindow(QWidget):
                 p.setBrush(QColor(235, 247, 255, 185))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawEllipse(QRectF(cx - 1.05 * unit, cy - 1.05 * unit, 2.1 * unit, 2.1 * unit))
+            elif self._glass_theme == "none":
+                p.setPen(QPen(QColor(205, 233, 249, 215), max(1.0, unit * 0.38)))
+                p.drawLine(QLineF(cx - 1.25 * unit, cy - 1.25 * unit, cx + 1.25 * unit, cy + 1.25 * unit))
+                p.drawLine(QLineF(cx + 1.25 * unit, cy - 1.25 * unit, cx - 1.25 * unit, cy + 1.25 * unit))
             else:
                 p.setBrush(QColor(205, 233, 249, 65))
                 p.setPen(Qt.PenStyle.NoPen)
@@ -1661,14 +1665,20 @@ class OverlayWindow(QWidget):
         )
         self._draw_keyboard_frame(p, white_bed)
         resting_white = QLinearGradient(white_bed.topLeft(), white_bed.bottomLeft())
-        resting_white.setColorAt(0, QColor(230, 237, 246, 255))
-        resting_white.setColorAt(1, QColor(154, 170, 190, 250))
+        resting_white.setColorAt(0.0, QColor(244, 250, 255, 228))
+        resting_white.setColorAt(0.35, QColor(218, 231, 244, 196))
+        resting_white.setColorAt(1.0, QColor(144, 164, 186, 212))
+        white_clip = QPainterPath()
+        white_clip.addRoundedRect(white_bed, 5.2, 5.2)
+        p.save()
+        p.setClipPath(white_clip)
         p.save()
         p.setOpacity(self._opacity)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(resting_white)
         p.drawRect(white_bed)
         p.restore()
+        self._draw_white_key_finish(p, white)
         for midi, rect in white.items():
             glow = active.get(midi, 0)
             if not glow:
@@ -1697,25 +1707,17 @@ class OverlayWindow(QWidget):
         p.setOpacity(self._opacity)
         self._draw_white_key_separators(p, white, black)
         p.restore()
+        p.restore()
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            base.setColorAt(0, QColor(42, 52, 68, 255))
-            base.setColorAt(1, QColor(8, 14, 25, 250))
-            if glow:
-                color = self._note_color(midi)
-                # Keep black keys saturated, but reduce their center luminance
-                # so the dark substrate no longer makes them dominate.
-                light = color.lighter(110)
-                center_color = color.darker(130)
-                deep = color.darker(200)
-                alpha = round(160 + 70 * glow)
-                light.setAlpha(alpha)
-                center_color.setAlpha(alpha)
-                deep.setAlpha(round(alpha * 0.86))
-                base.setColorAt(0, light)
-                base.setColorAt(0.48, center_color)
-                base.setColorAt(1, deep)
+            # One simple black-key glass gradient: translucent at the top,
+            # naturally dark only at the bottom. Active color is handled by
+            # the existing glow layers instead of staining the key body.
+            base.setColorAt(0.0, QColor(72, 80, 92, 168))
+            base.setColorAt(0.34, QColor(42, 49, 62, 198))
+            base.setColorAt(0.78, QColor(18, 24, 34, 226))
+            base.setColorAt(1.0, QColor(2, 4, 8, 244))
             edge = self._note_color(midi, round(30 + 110 * glow))
             p.setPen(QPen(edge, 0.7))
             p.setBrush(base)
@@ -1843,7 +1845,8 @@ class OverlayWindow(QWidget):
             return
         p.save()
         p.setOpacity(max(0.0, min(1.0, self._opacity)))
-        self._draw_frosted_panel(p, rect, 15.0)
+        if self._glass_theme != "none":
+            self._draw_frosted_panel(p, rect, 15.0)
 
         content = rect.adjusted(56, 9, -14, -9)
         gap = 8.0
@@ -2302,6 +2305,8 @@ class OverlayWindow(QWidget):
 
     def _draw_keyboard_frame(self, p: QPainter, white_bed: QRectF) -> None:
         """Draw a rounded frosted base aligned with the staff panel."""
+        if self._glass_theme == "none":
+            return
         p.save()
         p.setOpacity(self._opacity)
         panel = QRectF(
@@ -2315,30 +2320,54 @@ class OverlayWindow(QWidget):
 
     def _draw_black_key_finish(self, p: QPainter, rect: QRectF, glow: float) -> None:
         """Subtle inner highlight/edge for black keys."""
-        edge_alpha = round(40 + 58 * min(1.0, glow))
-        top_alpha = round(70 + 45 * min(1.0, glow))
+        strength = min(1.0, glow)
+        edge_alpha = round(30 + 32 * strength)
+        top_alpha = round(46 + 28 * strength)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(QColor(235, 247, 255, edge_alpha), 0.65))
+        p.setPen(QPen(QColor(235, 247, 255, edge_alpha), 0.45))
         p.drawRoundedRect(rect.adjusted(0.55, 0.55, -0.55, -0.55), 1.7, 1.7)
-        p.setPen(QPen(QColor(255, 255, 255, top_alpha), 0.75))
+        p.setPen(QPen(QColor(255, 255, 255, top_alpha), 0.55))
         p.drawLine(
             QLineF(
-                rect.left() + 1.5,
+                rect.left() + 1.8,
                 rect.top() + 1.35,
-                rect.right() - 1.5,
+                rect.right() - 1.8,
                 rect.top() + 1.35,
-            )
-        )
-        p.setPen(QPen(QColor(0, 0, 0, 48), 0.75))
-        p.drawLine(
-            QLineF(
-                rect.left() + 1.5,
-                rect.bottom() - 1.0,
-                rect.right() - 1.5,
-                rect.bottom() - 1.0,
             )
         )
         p.setBrush(Qt.BrushStyle.NoBrush)
+
+    def _draw_white_key_finish(self, p: QPainter, white: dict[int, QRectF]) -> None:
+        """Give resting white keys a soft frosted-glass face."""
+        p.save()
+        p.setOpacity(self._opacity)
+        for rect in white.values():
+            p.setPen(QPen(QColor(255, 255, 255, 45), 0.55))
+            p.drawLine(
+                QLineF(
+                    rect.left() + 1.0,
+                    rect.top() + 1.0,
+                    rect.right() - 1.0,
+                    rect.top() + 1.0,
+                )
+            )
+            sheen = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            sheen.setColorAt(0.0, QColor(255, 255, 255, 36))
+            sheen.setColorAt(0.22, QColor(255, 255, 255, 12))
+            sheen.setColorAt(1.0, QColor(0, 0, 0, 18))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(sheen)
+            p.drawRect(rect.adjusted(0.65, 0.65, -0.65, -0.65))
+            p.setPen(QPen(QColor(8, 15, 25, 24), 0.55))
+            p.drawLine(
+                QLineF(
+                    rect.left() + 1.0,
+                    rect.bottom() - 0.8,
+                    rect.right() - 1.0,
+                    rect.bottom() - 0.8,
+                )
+            )
+        p.restore()
 
     def _draw_active_auras(
         self,
@@ -2398,7 +2427,7 @@ class OverlayWindow(QWidget):
             if midi in white:
                 p.drawLine(QLineF(rect.left() + 1, rect.bottom() - 1, rect.right() - 1, rect.bottom() - 1))
             else:
-                p.drawRoundedRect(rect.adjusted(0.7, 0.7, -0.7, -0.7), 2, 2)
+                p.drawLine(QLineF(rect.left() + 1.5, rect.bottom() - 1.0, rect.right() - 1.5, rect.bottom() - 1.0))
             p.setPen(QPen(self._note_color(midi, round(245 * strength)), 1.8))
             p.drawLine(QLineF(rect.left() + 1.5, rect.top() + 1.2, rect.right() - 1.5, rect.top() + 1.2))
         p.restore()
@@ -3225,8 +3254,14 @@ class OverlayWindow(QWidget):
         self.update()
 
     def _toggle_glass_theme(self) -> None:
-        self._glass_theme = "light" if self._glass_theme == "dark" else "dark"
-        label = "白毛玻璃" if self._glass_theme == "light" else "黑毛玻璃"
+        order = ("dark", "light", "none")
+        index = order.index(self._glass_theme) if self._glass_theme in order else 0
+        self._glass_theme = order[(index + 1) % len(order)]
+        label = {
+            "dark": "黑毛玻璃",
+            "light": "白毛玻璃",
+            "none": "无毛玻璃",
+        }[self._glass_theme]
         self.set_status(f"底盘样式 · {label}", False)
         self.update()
 
@@ -3387,7 +3422,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.7.0"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3583,7 +3618,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.7.0"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.1"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3789,7 +3824,7 @@ class OverlayWindow(QWidget):
         # previous Erhu session must not silently load the melody model.
         self._visual_mode = "piano"
         saved_theme = str(settings.value("glass_theme", "dark"))
-        self._glass_theme = "light" if saved_theme == "light" else "dark"
+        self._glass_theme = saved_theme if saved_theme in {"dark", "light", "none"} else "dark"
         self._scale_percent = max(
             60, min(160, int(settings.value("scale_percent", 100)))
         )

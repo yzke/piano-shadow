@@ -1,8 +1,8 @@
 #ifndef AppVersion
-  #define AppVersion "0.7.0"
+  #define AppVersion "0.7.1"
 #endif
 #ifndef SourceExe
-  #define SourceExe "dist\PianoShadow-v0.7.0-Windows-x64.exe"
+  #define SourceExe "dist\PianoShadow-v0.7.1-Windows-x64.exe"
 #endif
 
 #define AppName "Piano Shadow"
