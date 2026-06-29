@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtCore import QEvent, QPointF, QSettings, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, QSettings, Qt
 from PyQt6.QtGui import QImage, QKeyEvent, QPainter
 from PyQt6.QtWidgets import QApplication
 
@@ -176,6 +176,39 @@ class WindowsOverlayTests(unittest.TestCase):
         self.assertIsNotNone(window._staff_rect(white))
         self.assertEqual(tuple(window._control_rects()), ("lock",))
         window._toggle_keyboard_only(False)
+        window.close()
+
+    def test_staff_shadow_area_is_mouse_passthrough_when_locked(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_staff_shadow(True)
+        window._toggle_keyboard_only(True)
+
+        white, _black = window._keyboard_geometry()
+        staff_rect = window._staff_rect(white)
+        self.assertIsNotNone(staff_rect)
+        self.assertFalse(
+            window._locked_hit_is_interactive(staff_rect.center().toPoint())
+        )
+        self.assertTrue(
+            window._locked_hit_is_interactive(
+                window._control_rects()["lock"].center().toPoint()
+            )
+        )
+        window.close()
+
+    def test_large_locked_overlay_only_keeps_lock_button_interactive(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window.setFixedSize(1280, 720)
+        window._toggle_position_lock(True)
+
+        lock_center = window._control_rects()["lock"].center().toPoint()
+        self.assertTrue(window._locked_hit_is_interactive(lock_center))
+        for point in (
+            QPoint(24, 24),
+            window.rect().center(),
+            QPoint(window.width() - 24, window.height() - 24),
+        ):
+            self.assertFalse(window._locked_hit_is_interactive(point))
         window.close()
 
     def test_staff_spelling_uses_sharp_positions(self):

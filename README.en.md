@@ -62,6 +62,15 @@ Current version: `0.6.4`
 - If the user does not start answering within two seconds after the prompt, the same prompt is replayed.
 - Questions follow the current key and include single notes, diatonic triads/inversions, pentatonic material, and full-mode fragments.
 
+### Staff Shadow
+
+- Piano mode has a second-row toggle for the staff trace. It is off by default.
+- When enabled, a double staff is shown below the 88-key keyboard: treble staff plus bass staff.
+- Recognized notes enter from the right and flow left, giving a quick view of pitch contour.
+- This is not strict rhythmic engraving. It does not treat model note durations as formal notation; it is a live visual trace.
+- Staff lines, clefs, and background follow keyboard opacity. Notes and trails follow the pitch-class color system and active-note opacity.
+- In keyboard-only / click-through mode, enabled staff lines and notes remain visible while the staff area still passes mouse input through.
+
 ### Erhu Shadow
 
 - This is an exploratory feature. It can show continuous pitch motion and approximate string position, but recognition accuracy is not yet stable enough for reliable transcription or real erhu fingering judgment.
@@ -90,6 +99,10 @@ These screenshots were captured during development and may not match every pixel
 ### Ear training
 
 ![Ear training development screenshot](docs/screenshots/ear-training.png)
+
+### Staff Shadow
+
+![Staff Shadow development screenshot](docs/screenshots/staff-shadow.png)
 
 ### Erhu Shadow
 
