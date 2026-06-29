@@ -156,6 +156,38 @@ class WindowsOverlayTests(unittest.TestCase):
         window._toggle_performance_mode(False)
         window.close()
 
+    def test_ear_training_prompt_sounds_without_revealing_key(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        played = []
+        window._performance.synth.note_on = (
+            lambda midi, velocity: played.append((midi, velocity))
+        )
+        generation = window._ear_playback_generation
+        window.visual_notes.clear()
+        window._play_ear_note(generation, 64)
+        self.assertEqual(played, [(64, 92)])
+        self.assertEqual(window.visual_notes, [])
+
+        window._performance.press("Q")
+        self.app.processEvents()
+        self.assertTrue(any(note.midi == 60 for note in window.visual_notes))
+        window._toggle_performance_mode(False)
+        window.close()
+
+    def test_answer_attempt_cancels_pending_prompt_replay(self):
+        window = OverlayWindow(AppConfig(demo_mode=True))
+        window._toggle_performance_mode(True)
+        session = window._performance.ear_training
+        session.note_count = 1
+        session.target = (60,)
+        session.accepting = True
+        generation = window._ear_playback_generation
+        window._handle_ear_answer(61)
+        self.assertGreater(window._ear_playback_generation, generation)
+        window._toggle_performance_mode(False)
+        window.close()
+
     def test_ctrl_performance_key_uses_physical_key_code(self):
         event = QKeyEvent(
             QEvent.Type.KeyPress,

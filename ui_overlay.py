@@ -1139,7 +1139,6 @@ class OverlayWindow(QWidget):
         if generation != self._ear_playback_generation or self._performance is None:
             return
         self._performance.synth.note_on(midi, 92)
-        self.performance_note_received.emit(midi, 92)
 
     def _stop_ear_note(self, generation: int, midi: int) -> None:
         if generation == self._ear_playback_generation and self._performance is not None:
@@ -1156,6 +1155,10 @@ class OverlayWindow(QWidget):
             f"听音练习 · {session.note_count} 音 · 请按顺序复现",
             False,
         )
+        QTimer.singleShot(
+            2000,
+            lambda token=generation: self._replay_ear_question_if_current(token),
+        )
 
     @pyqtSlot(int)
     def _handle_ear_answer(self, midi: int) -> None:
@@ -1163,6 +1166,11 @@ class OverlayWindow(QWidget):
             return
         session = self._performance.ear_training
         result = session.submit(midi)
+        if result != "ignored":
+            # A real answer attempt owns the interaction now. Invalidate the
+            # pending two-second demonstration replay so it cannot interrupt
+            # a multi-note response.
+            self._ear_playback_generation += 1
         if result == "continue":
             self.set_status(
                 f"听音练习 · 已答对 {len(session.answer)}/{session.note_count}",
@@ -1187,7 +1195,7 @@ class OverlayWindow(QWidget):
             self.update()
             generation = self._ear_playback_generation
             QTimer.singleShot(
-                1800,
+                2000,
                 lambda token=generation: self._replay_ear_question_if_current(token),
             )
 
