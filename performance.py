@@ -7,10 +7,12 @@ import random
 from collections.abc import Callable
 
 
-MAJOR_ROOTS = (0, 2, 4, 5, 7, 9, 11)
-MAJOR_NAMES = ("C", "D", "E", "F", "G", "A", "B")
-MINOR_ROOTS = (9, 11, 0, 2, 4, 5, 7)
-MINOR_NAMES = ("A", "B", "C", "D", "E", "F", "G")
+# Clockwise circle of fifths. Relative major/minor keys share each index so
+# the unified scale sequence can keep related tonalities next to each other.
+MAJOR_ROOTS = (0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5)
+MAJOR_NAMES = ("C", "G", "D", "A", "E", "B", "F♯", "D♭", "A♭", "E♭", "B♭", "F")
+MINOR_ROOTS = (9, 4, 11, 6, 1, 8, 3, 10, 5, 0, 7, 2)
+MINOR_NAMES = ("A", "E", "B", "F♯", "C♯", "G♯", "D♯", "B♭", "F", "C", "G", "D")
 MAJOR_INTERVALS = (0, 2, 4, 5, 7, 9, 11)
 MINOR_INTERVALS = (0, 2, 3, 5, 7, 8, 10)
 

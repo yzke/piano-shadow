@@ -419,9 +419,9 @@ class OverlayWindow(QWidget):
         p.setFont(title_font)
         p.setPen(color)
         p.drawText(
-            QRectF(24, 43, 112, 23),
+            QRectF(24, 43, 170, 23),
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            controller.scale_name,
+            f"当前 · {controller.scale_name}",
         )
         if self._performance_help:
             help_rect = QRectF(

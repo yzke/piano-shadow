@@ -77,16 +77,16 @@ class PerformanceTests(unittest.TestCase):
         controller.shift_scale(1)
         self.assertEqual(controller.scale_name, "A 小调")
         controller.shift_scale(1)
-        self.assertEqual(controller.scale_name, "D 大调")
-        self.assertEqual(controller.midi_for_key("Q"), 62)
-        self.assertEqual(controller.midi_for_key("Q", 1), 63)
-        self.assertEqual(controller.midi_for_key("Q", -1), 61)
+        self.assertEqual(controller.scale_name, "G 大调")
+        self.assertEqual(controller.midi_for_key("Q"), 67)
+        self.assertEqual(controller.midi_for_key("Q", 1), 68)
+        self.assertEqual(controller.midi_for_key("Q", -1), 66)
         controller.shift_scale(-1)
         self.assertEqual(controller.scale_name, "A 小调")
         controller.shift_scale(-1)
         self.assertEqual(controller.scale_name, "C 大调")
         controller.shift_scale(-1)
-        self.assertEqual(controller.scale_name, "G 小调")
+        self.assertEqual(controller.scale_name, "D 小调")
 
     def test_every_extended_key_is_correct_in_every_scale(self):
         controller, _ = self.create_controller()
@@ -112,8 +112,8 @@ class PerformanceTests(unittest.TestCase):
 
     def test_scale_sequence_is_complete_and_reversible(self):
         controller, _ = self.create_controller()
-        self.assertEqual(len(SCALE_SEQUENCE), 14)
-        self.assertEqual(len(set(SCALE_SEQUENCE)), 14)
+        self.assertEqual(len(SCALE_SEQUENCE), 24)
+        self.assertEqual(len(set(SCALE_SEQUENCE)), 24)
         visited = []
         for _ in SCALE_SEQUENCE:
             visited.append((controller.mode, controller.scale_index))
@@ -126,6 +126,30 @@ class PerformanceTests(unittest.TestCase):
             controller.shift_scale(1)
             controller.shift_scale(-1)
             self.assertEqual((controller.mode, controller.scale_index), before)
+
+    def test_scale_sequence_follows_the_circle_of_fifths(self):
+        controller, _ = self.create_controller()
+        names = []
+        for _ in SCALE_SEQUENCE:
+            names.append(controller.scale_name)
+            controller.shift_scale(1)
+        self.assertEqual(
+            names,
+            [
+                "C 大调", "A 小调",
+                "G 大调", "E 小调",
+                "D 大调", "B 小调",
+                "A 大调", "F♯ 小调",
+                "E 大调", "C♯ 小调",
+                "B 大调", "G♯ 小调",
+                "F♯ 大调", "D♯ 小调",
+                "D♭ 大调", "B♭ 小调",
+                "A♭ 大调", "F 小调",
+                "E♭ 大调", "C 小调",
+                "B♭ 大调", "G 小调",
+                "F 大调", "D 小调",
+            ],
+        )
 
     def test_sustain_rest_and_note_lifecycle(self):
         controller, visual = self.create_controller()
