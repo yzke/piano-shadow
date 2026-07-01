@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 Piano Shadow is a local desktop music-visualization and performance tool. It started as a translucent piano-note overlay: it captures system audio, uses Piano GPU or Spotify Basic Pitch to transcribe piano notes, and projects recent notes onto an 88-key keyboard. It now also includes computer-keyboard/MIDI performance mode, switchable instruments and sound sources, ear training, piano key/solfege association, and an experimental Erhu Shadow mode for real-time continuous-pitch visualization. It is designed for listening practice, key-position association, and performance assistance, not professional score transcription. Audio stays local; no cloud API is used.
 
-Current version: `0.7.1`
+Current version: `0.7.2`
 
 ## Features
 
@@ -128,7 +128,7 @@ Older piano overlay screenshots are also kept:
 Download the installer from GitHub Releases:
 
 ```text
-PianoShadow-Setup-v0.7.1-Windows-x64.exe
+PianoShadow-Setup-v0.7.2-Windows-x64.exe
 ```
 
 The installer does not require users to install Python. Default paths:
@@ -176,14 +176,14 @@ The installed app can detect `%LOCALAPPDATA%\PianoShadow\venv` and call the loca
 ### Building on Windows
 
 ```powershell
-.\build-installer.ps1 -Version 0.7.1
+.\build-installer.ps1 -Version 0.7.2
 ```
 
 Requires Inno Setup 6. Outputs are written to `dist`:
 
 ```text
-PianoShadow-v0.7.1-Windows-x64.exe
-PianoShadow-Setup-v0.7.1-Windows-x64.exe
+PianoShadow-v0.7.2-Windows-x64.exe
+PianoShadow-Setup-v0.7.2-Windows-x64.exe
 ```
 
 ## Linux / WSL / source usage

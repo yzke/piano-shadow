@@ -1711,19 +1711,40 @@ class OverlayWindow(QWidget):
         for midi, rect in black.items():
             glow = active.get(midi, 0)
             base = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            # One simple black-key glass gradient: translucent at the top,
-            # naturally dark only at the bottom. Active color is handled by
-            # the existing glow layers instead of staining the key body.
-            base.setColorAt(0.0, QColor(72, 80, 92, 168))
-            base.setColorAt(0.34, QColor(42, 49, 62, 198))
-            base.setColorAt(0.78, QColor(18, 24, 34, 226))
-            base.setColorAt(1.0, QColor(2, 4, 8, 244))
+            if glow:
+                # Active black keys use the same body-lit idea as white keys,
+                # but keep the pitch color under a dark glass offset.
+                color = self._note_color(midi)
+                upper = color.darker(128)
+                center = color.darker(178)
+                lower = color.darker(235)
+                alpha = round(152 + 72 * min(1.0, glow))
+                upper.setAlpha(alpha)
+                center.setAlpha(round(alpha * 0.94))
+                lower.setAlpha(round(alpha * 1.04))
+                base.setColorAt(0.0, QColor(112, 124, 142, round(120 + 36 * glow)))
+                base.setColorAt(0.18, upper)
+                base.setColorAt(0.55, center)
+                base.setColorAt(1.0, lower)
+            else:
+                # Resting black-key glass: translucent at the top, naturally
+                # dark only at the bottom.
+                base.setColorAt(0.0, QColor(72, 80, 92, 168))
+                base.setColorAt(0.34, QColor(42, 49, 62, 198))
+                base.setColorAt(0.78, QColor(18, 24, 34, 226))
+                base.setColorAt(1.0, QColor(2, 4, 8, 244))
             edge = self._note_color(midi, round(30 + 110 * glow))
             p.setPen(QPen(edge, 0.7))
             p.setBrush(base)
             if glow:
                 p.save()
                 p.setOpacity(self._active_key_opacity())
+                shadow_rect = rect.adjusted(0.45, 2.2, -0.45, 1.5)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(0, 0, 0, round(70 + 55 * min(1.0, glow))))
+                p.drawRoundedRect(shadow_rect, 2, 2)
+                p.setPen(QPen(edge, 0.7))
+                p.setBrush(base)
                 p.drawRoundedRect(rect, 2, 2)
                 self._draw_black_key_finish(p, rect, glow)
                 p.restore()
@@ -3422,7 +3443,7 @@ class OverlayWindow(QWidget):
             self.model_download_source_received.emit(host)
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.7.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.2"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
@@ -3618,7 +3639,7 @@ class OverlayWindow(QWidget):
             host = urllib.parse.urlparse(url).netloc or "本地文件"
             try:
                 request = urllib.request.Request(
-                    url, headers={"User-Agent": "PianoShadow/0.7.1"}
+                    url, headers={"User-Agent": "PianoShadow/0.7.2"}
                 )
                 with urllib.request.urlopen(request, timeout=120) as response:
                     total = int(response.headers.get("Content-Length", "0"))
